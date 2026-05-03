@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>الخارطة السياحية الذكية</title>
+  <script type="module" src="https://js.arcgis.com/5.0/"></script>
+  <link rel="stylesheet" href="https://js.arcgis.com/5.0/esri/themes/light/main.css" />
+  <link rel="stylesheet" href="styles.css?v=20260427-road-labels-cleaned" />
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+  <script src="https://unpkg.com/shpjs@latest/dist/shp.min.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+
+      <section class="panel compact">
+        <h2>الطبقات</h2>
+        <label class="check"><input type="checkbox" id="toggleGov" checked> المحافظات</label>
+        <label class="check"><input type="checkbox" id="toggleGovLabels" checked> أسماء المحافظات</label>
+        <label class="check"><input type="checkbox" id="toggleLiwa"> الألوية</label>
+        <label class="check"><input type="checkbox" id="toggleLiwaLabels"> أسماء الألوية</label>
+        <label class="check"><input type="checkbox" id="toggleRails"> السكك الحديدية</label>
+        <label class="check"><input type="checkbox" id="toggleRailLabels"> أسماء السكك</label>
+        <label class="check"><input type="checkbox" id="toggleHighways"> الطرق</label>
+        <label class="check"><input type="checkbox" id="toggleHighwayLabels"> أسماء الطرق</label>
+        <label class="check"><input type="checkbox" id="togglePlaces" checked> المدن والبلدات</label>
+        <label class="check"><input type="checkbox" id="togglePlaceLabels" checked> أسماء المدن والبلدات</label>
+        <label class="check"><input type="checkbox" id="toggleFiberEdu"> مديريات التربية</label>
+        <label class="check"><input type="checkbox" id="toggleFiberGov"> الجهات الحكومية</label>
+        <label class="check"><input type="checkbox" id="toggleFiberHealth" checked> المؤسسات الصحية</label>
+        <label class="check"><input type="checkbox" id="toggleFiberSchools" checked> المدارس</label>
+        <label class="check"><input type="checkbox" id="toggleFiberLabels" checked> أسماء المواقع المؤسسية</label>
+        <label class="check"><input type="checkbox" id="toggleArchSites" checked> المواقع الأثرية</label>
+        <label class="check"><input type="checkbox" id="toggleArchLabels" checked> أسماء المواقع الأثرية</label>
+        <label class="check"><input type="checkbox" id="toggleHotels"> الفنادق ومنشآت الإيواء</label>
+        <label class="check"><input type="checkbox" id="toggleHotelLabels"> أسماء الفنادق</label>
+        <label class="check"><input type="checkbox" id="toggleRestaurants"> المطاعم وخدمات الطعام</label>
+        <label class="check"><input type="checkbox" id="toggleRestaurantLabels"> أسماء المطاعم</label>
+        <label class="check"><input type="checkbox" id="toggleMasar"> مسار درب الأردن</label>
+        <label class="check"><input type="checkbox" id="toggleMasarLabels"> أسماء مراحل درب الأردن</label>
+        <label class="check"><input type="checkbox" id="toggleHillshade"> التضاريس (Hillshade)</label>
+        <label class="check"><input type="checkbox" id="toggleContours" checked> خطوط الكنتور</label>
+      </section>
+
+      <section class="panel compact">
+        <h2>سلوك العرض</h2>
+        <div class="info-row"><span>الوضع الحالي</span><strong id="modeBadge">ArcGIS</strong></div>
+        <div class="info-row"><span>المقياس</span><strong id="zoomBadge">1:—</strong></div>
+        <div class="info-row"><span>نطاق العرض</span><strong id="highwayZoomBadge">حسب المقياس</strong></div>
+        <div class="hint" id="zoomHint">الخريطة الآن مصممة كلوحة عرض رئيسية نظيفة. تبقى الطبقات والتحكم في الشريط الجانبي، بينما تتركز المساحة الرئيسية على الخريطة نفسها.</div>
+      </section>
+
+      <section class="panel compact legend-panel">
+        <h2>ألوان المحافظات</h2>
+        <div id="govLegend" class="legend-grid"></div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="railLegendWrap">
+        <h2>مفتاح السكك</h2>
+        <div class="rail-legend">
+          <div><span class="rail-swatch main"></span>خطوط تشغيلية / رئيسية</div>
+          <div><span class="rail-swatch service"></span>خطوط خدمية</div>
+          <div><span class="rail-swatch historic"></span>خطوط تاريخية / متوقفة</div>
+        </div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="highwayLegendWrap">
+        <h2>مفتاح الطرق</h2>
+        <div class="road-legend">
+          <div><span class="road-swatch major"></span>طرق رئيسية</div>
+          <div><span class="road-swatch medium"></span>طرق متوسطة</div>
+          <div><span class="road-swatch local"></span>طرق محلية</div>
+          <div><span class="road-swatch minor"></span>مسارات وممرات</div>
+        </div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="placeLegendWrap">
+        <h2>مفتاح المدن والبلدات</h2>
+        <div class="road-legend">
+          <div><span class="place-swatch city"></span>مدينة / عاصمة</div>
+          <div><span class="place-swatch town"></span>بلدة / ضاحية</div>
+          <div><span class="place-swatch village"></span>قرية / محلية</div>
+        </div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="fiberLegendWrap">
+        <h2>مواقع الربط بالألياف الضوئية</h2>
+        <div class="road-legend">
+          <div><span class="fiber-swatch edu"></span>مديريات التربية</div>
+          <div><span class="fiber-swatch gov_agency"></span>الجهات الحكومية</div>
+          <div><span class="fiber-swatch health"></span>المؤسسات الصحية</div>
+          <div><span class="fiber-swatch school"></span>المدارس</div>
+        </div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="masarLegendWrap">
+        <h2>مفتاح مسار درب الأردن</h2>
+        <div class="road-legend">
+          <div><span class="road-swatch" style="background:#0f766e;border-color:#ffffff"></span>مسار درب الأردن</div>
+        </div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="archLegendWrap">
+        <h2>مفتاح المواقع الأثرية</h2>
+        <div class="road-legend">
+          <div><span class="arch-swatch"></span>موقع أثري</div>
+        </div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="hotelsLegendWrap">
+        <h2>مفتاح الفنادق</h2>
+        <div class="road-legend">
+          <div><span class="hotel-swatch"></span>فندق / منشأة إيواء</div>
+        </div>
+      </section>
+
+      <section class="panel compact legend-panel hidden" id="restaurantsLegendWrap">
+        <h2>مفتاح المطاعم</h2>
+        <div class="road-legend">
+          <div><span class="restaurant-swatch"></span>مطعم / خدمة طعام</div>
+        </div>
+      </section>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace-header">
+        <div class="title-wrap">
+          <h2>الخارطة السياحية الذكية</h2>
+          <p>لوحة ذكية تفاعلية للبيانات والطبقات السياحية مع مساعد مكاني يعرض النتيجة على الخريطة وداخل شاشة Identify.</p>
+        </div>
+      </header>
+
+      <section class="map-panel">
+        <div class="control-strip">
+          <div class="map-search" aria-label="بحث في طبقات الخريطة">
+            <div class="map-search-row">
+              <input id="mapSearchInput" type="search" placeholder="ابحث في جميع الطبقات: محافظات، ألوية، طرق، سكك، مدن، مواقع مؤسسية، مواقع أثرية مثل جبل القلعة، فنادق، مسارات، كنتور..." autocomplete="off" />
+              <select id="mapSearchLayer" aria-label="تصفية طبقة البحث">
+                <option value="all">الكل</option>
+                <option value="gov">المحافظات</option>
+                <option value="liwa">الألوية</option>
+                <option value="rail">السكك</option>
+                <option value="highway">الطرق</option>
+                <option value="place">المدن والبلدات</option>
+                <option value="fiber">المواقع المؤسسية</option>
+                <option value="arch">المواقع الأثرية</option>
+                <option value="hotels">الفنادق ومنشآت الإيواء</option>
+                <option value="restaurants">المطاعم وخدمات الطعام</option>
+                <option value="masar">مسار درب الأردن</option>
+                <option value="contour">خطوط الكنتور</option>
+              </select>
+              <button id="mapSearchClear" class="ghost-btn" type="button">مسح</button>
+            </div>
+            <div id="searchSuggestions" class="search-suggestions hidden"></div>
+          </div>
+
+          <div class="quick-actions" aria-label="أدوات الخريطة">
+            <button class="tool-btn aerial-btn" id="aerial3dBtn" type="button" title="تشغيل الصور الجوية" aria-label="تشغيل الصور الجوية" aria-pressed="false">🛰️</button>
+            <button class="tool-btn" id="view3dBtn" type="button" title="تفعيل العرض ثلاثي الأبعاد" aria-label="تفعيل العرض ثلاثي الأبعاد">3D</button>
+            <button class="tool-btn" id="sidebarToggleBtn" type="button" title="إخفاء الشريط الجانبي" aria-label="إخفاء الشريط الجانبي" aria-pressed="false">☰</button>
+            <button class="tool-btn" id="clearHighlightBtn" type="button" title="مسح التحديد" aria-label="مسح التحديد">✕</button>
+            <button class="tool-btn" id="parcelQueryBtn" type="button" title="استعلام قطعة أرض" aria-label="استعلام قطعة أرض">⬢</button>
+            <button class="tool-btn" id="openDlsBtn" type="button" title="فتح مخططات الأراضي" aria-label="فتح مخططات الأراضي">⌂</button>
+            <input id="routeFileInput" type="file" accept=".gpx,.gps,.kml,.geojson,.json,.zip" hidden />
+            <button class="tool-btn import-route-btn" id="importRouteBtn" type="button" title="رفع GPX / GPS / KML / GeoJSON / Shapefile ZIP" aria-label="رفع GPX أو GPS أو KML أو GeoJSON أو Shapefile ZIP">رفع</button>
+            <button class="tool-btn edit-feature-btn hidden" id="editSelectedBtn" type="button" title="تعديل العنصر المحدد" aria-label="تعديل العنصر المحدد" disabled>✎</button>
+            <button class="tool-btn save-edit-btn hidden" id="saveEditBtn" type="button" title="حفظ التعديل" aria-label="حفظ التعديل" disabled>✓</button>
+            <button class="tool-btn cancel-edit-btn hidden" id="cancelEditBtn" type="button" title="إلغاء التعديل" aria-label="إلغاء التعديل" disabled>↶</button>
+            <button class="tool-btn export-geojson-btn" id="exportGeoJsonBtn" type="button" title="تصدير البيانات" aria-label="تصدير البيانات">تصدير</button>
+            <button class="tool-btn ai-tool-btn" id="aiAssistantBtn" type="button" title="مساعد الخارطة السياحية الذكية" aria-label="مساعد الخارطة السياحية الذكية">AI</button>
+          </div>
+        </div>
+
+
+        <div id="exportDialog" class="export-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="exportDialogTitle">
+          <div class="export-dialog-card">
+            <div class="export-dialog-header">
+              <h3 id="exportDialogTitle">تصدير البيانات</h3>
+              <button id="closeExportDialogBtn" class="dialog-close-btn" type="button" aria-label="إغلاق نافذة التصدير">×</button>
+            </div>
+            <div class="export-dialog-body">
+              <section class="export-option-group">
+                <h4>نطاق التصدير</h4>
+                <label><input type="radio" name="exportScope" value="all" checked> كل البيانات المستوردة/المعدلة</label>
+                <label><input type="radio" name="exportScope" value="modified"> البيانات المعدلة فقط</label>
+                <label><input type="radio" name="exportScope" value="selected"> العنصر المحدد فقط</label>
+                <label><input type="radio" name="exportScope" value="geometry"> حسب نوع الهندسة</label>
+              </section>
+              <section class="export-option-group" id="exportGeometryGroup">
+                <h4>نوع الهندسة</h4>
+                <label><input type="radio" name="exportGeometryType" value="all" checked> كل الأنواع</label>
+                <label><input type="radio" name="exportGeometryType" value="point"> نقاط</label>
+                <label><input type="radio" name="exportGeometryType" value="polyline"> خطوط</label>
+                <label><input type="radio" name="exportGeometryType" value="polygon"> مضلعات</label>
+              </section>
+              <section class="export-option-group">
+                <h4>تصدير البيانات</h4>
+                <label><input type="radio" name="exportFormat" value="geojson" checked> GeoJSON</label>
+                <label><input type="radio" name="exportFormat" value="kml"> KML</label>
+                <label><input type="radio" name="exportFormat" value="gpx"> GPX</label>
+                <label><input type="radio" name="exportFormat" value="csv"> CSV</label>
+              </section>
+              <section class="export-option-group map-export-group">
+                <h4>تصدير الخريطة</h4>
+                <label><input type="radio" name="exportFormat" value="png"> PNG صورة</label>
+                <label><input type="radio" name="exportFormat" value="pdf"> PDF تقرير</label>
+              </section>
+            </div>
+            <div class="export-dialog-actions">
+              <button id="confirmExportBtn" class="primary-dialog-btn" type="button">تصدير</button>
+              <button id="cancelExportDialogBtn" class="secondary-dialog-btn" type="button">إلغاء</button>
+            </div>
+          </div>
+        </div>
+        <div id="mapWrap" class="map-wrap clean-map-wrap">
+          <arcgis-map id="mapElement" class="map-view-host" popup-component-enabled attribution-mode="light" aria-label="خريطة الأردن ثنائية الأبعاد">
+            <arcgis-scale-bar slot="bottom-left" unit="metric"></arcgis-scale-bar>
+          </arcgis-map>
+          <arcgis-scene id="sceneElement" class="map-view-host scene-view-host hidden" popup-component-enabled attribution-mode="light" aria-label="خريطة الأردن ثلاثية الأبعاد">
+            <arcgis-scale-bar slot="bottom-left" unit="metric"></arcgis-scale-bar>
+          </arcgis-scene>
+          <div class="map-nav-controls" aria-label="أدوات التحكم في الخريطة">
+            <button id="mapHomeBtn" type="button" title="العودة إلى خريطة الأردن كاملة" aria-label="العودة إلى خريطة الأردن كاملة">⌂</button>
+            <button id="zoomInBtn" type="button" title="تكبير" aria-label="تكبير">+</button>
+            <button id="zoomOutBtn" type="button" title="تصغير" aria-label="تصغير">−</button>
+          </div>
+          <div id="mapScaleBadge" class="map-scale-badge"><span class="scale-label">المقياس</span> <span class="scale-value" dir="ltr">1:—</span></div>
+          <div id="editStatusBox" class="edit-status-box hidden">جاهز للتحرير</div>
+
+          <aside id="aiAssistantPanel" class="ai-assistant-panel hidden" aria-hidden="true">
+            <div class="ai-panel-head">
+              <div>
+                <h3>مساعد الخارطة السياحية الذكية</h3>
+                <p>اكتب سؤالاً حراً فقط، وسيحوّله التطبيق إلى إجراء على الخريطة: تكبير، تمييز، نطاق، نتائج قريبة، أو موقع مقترح.</p>
+              </div>
+              <div class="ai-panel-actions" aria-label="أوامر المساعد">
+                <button id="aiAssistantMinimize" type="button" aria-label="تصغير المساعد" title="تصغير المساعد">−</button>
+                <button id="aiAssistantClose" type="button" aria-label="إغلاق المساعد" title="إغلاق المساعد">×</button>
+              </div>
+            </div>
+
+            <div id="aiContextSummary" class="ai-context-box">
+              لا يوجد عنصر محدد حالياً. اكتب سؤالاً يتضمن مكاناً مثل: عجلون، البترا، مادبا، جبل القلعة، أو مسار درب الأردن.
+            </div>
+
+            <div class="ai-search-card">
+              <label class="ai-question-label" for="aiQuestionInput">سؤال حر مرتبط بالخريطة</label>
+              <textarea id="aiQuestionInput" rows="5" placeholder="مثال: اعرض المطاعم القريبة من جبل القلعة ضمن 2 كم
+مثال: اقترح استثمار سياحي في عجلون مع المبرر والموقع
+مثال: حلل البنية التحتية لمسار درب الأردن"></textarea>
+              <div class="ai-help-text">
+                اكتب السؤال بصيغة طبيعية. اضغط Enter للتنفيذ، و Shift + Enter لإضافة سطر جديد. كلما ذكرت المكان أو الطبقة أو المسافة، تكون النتيجة أدق على الخريطة.
+              </div>
+              <div class="ai-actions-row">
+                <button id="aiAskBtn" type="button">تنفيذ السؤال على الخريطة</button>
+                <button id="aiClearBtn" type="button">مسح</button>
+              </div>
+            </div>
+
+            <div id="aiAnswerBox" class="ai-answer-box" aria-live="polite">
+              <strong>جاهز.</strong> اكتب سؤالك وسيتم تنفيذ النتيجة على الخريطة عند الإمكان.
+            </div>
+
+            <div class="ai-examples-box" aria-label="أمثلة صياغة">
+              <div class="ai-examples-title">أمثلة يمكن كتابتها</div>
+              <ul>
+                <li>اعرض الفنادق القريبة من البترا ضمن 5 كم.</li>
+                <li>ما أفضل فرصة استثمار سياحي في عجلون؟</li>
+                <li>اقترح فعالية سياحية في مادبا وحدد مبررها.</li>
+                <li>حلل البنية التحتية حول مسار درب الأردن.</li>
+              </ul>
+            </div>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="layerHelpModal" class="modal-overlay hidden" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h3>شرح الطبقات</h3>
+        <button id="closeLayerHelpBtn" class="modal-close" aria-label="إغلاق">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="help-block">
+          <h4>المحافظات</h4>
+          <p>تمثل الحدود الإدارية لمحافظات المملكة، وتظهر ملونة في العرض العام، ثم تصبح أخف، ثم تتحول إلى حدود مرجعية فقط عند التكبير.</p>
+        </div>
+        <div class="help-block">
+          <h4>المدن والبلدات</h4>
+          <p>تعرض كنقاط مصنفة إلى مدينة / بلدة / قرية مع أسماء قابلة للتشغيل أو الإخفاء من اللوحة الجانبية.</p>
+        </div>
+        <div class="help-block">
+          <h4>الخلفية</h4>
+          <p>الوضع الافتراضي يبدأ بدون Basemap لإبراز الطبقات الموضوعية. يمكن إظهار OpenStreetMap مؤقتًا من زر الخلفية.</p>
+        </div>
+        <div class="help-block">
+          <h4>حالة الترحيل</h4>
+          <p>هذه النسخة تركز على واجهة نظيفة ومستقرة للدفعة الأولى من ArcGIS، مع المحافظة على البحث، التصدير، والهرمية الكارتوغرافية.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="data/gov_data.js"></script>
+  <script src="data/liwa_data.js"></script>
+  <script src="data/rail_data.js"></script>
+  <script src="data/highway_data.js"></script>
+  <script src="data/places_extra_data.js"></script>
+  <script src="data/fiber_layers_data.js"></script>
+  <script src="data/contour_data.js"></script>
+  <script src="data/elevation_grid.js"></script>
+  <script src="data/arch_sites_data.js"></script>
+  <script src="data/hotels_data.js"></script>
+  <script src="data/restaurants_data.js"></script>
+  <script src="data/masar_data.js"></script>
+  <script src="data/official_statistics_data.js"></script>
+  <script type="module" src="app.js?v=20260503-root-hierarchy-icons-map-export-v3"></script>
+</body>
+</html>
