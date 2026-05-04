@@ -1,30 +1,50 @@
-/* Local Tajawal font loading from /fonts folder.
-   النسخة المرفوعة تحتوي ملفات TTF، لذلك تم ضبط التطبيق ليقرأها مباشرة من مجلد fonts.
-   ضع الملفات التالية داخل fonts: Tajawal-Regular.ttf, Tajawal-Medium.ttf, Tajawal-Bold.ttf, Tajawal-ExtraBold.ttf */
+/* =========================================================
+   Local Tajawal font loading from /fonts folder
+   ---------------------------------------------------------
+   واجهة التطبيق تقرأ الخطوط محلياً من مجلد fonts فقط.
+   ضع ملفات الخط داخل: fonts/
+
+   الملفات المدعومة بالترتيب:
+   - Tajawal-Regular.woff2 أو Tajawal-Regular.ttf
+   - Tajawal-Medium.woff2  أو Tajawal-Medium.ttf
+   - Tajawal-Bold.woff2    أو Tajawal-Bold.ttf
+   - Tajawal-ExtraBold.woff2 أو Tajawal-ExtraBold.ttf
+
+   ملاحظة: تسميات ArcGIS داخل الخريطة تستخدم Arial Unicode MS
+   حتى لا يحاول ArcGIS تحميل tajawal-bold من static.arcgis.com.
+   ========================================================= */
 @font-face{
   font-family:"Tajawal";
-  src:url("fonts/Tajawal-Regular.ttf") format("truetype");
+  src:
+    url("./fonts/Tajawal-Regular.woff2") format("woff2"),
+    url("./fonts/Tajawal-Regular.ttf") format("truetype");
   font-weight:400;
   font-style:normal;
   font-display:swap;
 }
 @font-face{
   font-family:"Tajawal";
-  src:url("fonts/Tajawal-Medium.ttf") format("truetype");
+  src:
+    url("./fonts/Tajawal-Medium.woff2") format("woff2"),
+    url("./fonts/Tajawal-Medium.ttf") format("truetype");
   font-weight:500;
   font-style:normal;
   font-display:swap;
 }
 @font-face{
   font-family:"Tajawal";
-  src:url("fonts/Tajawal-Bold.ttf") format("truetype");
+  src:
+    url("./fonts/Tajawal-Bold.woff2") format("woff2"),
+    url("./fonts/Tajawal-Bold.ttf") format("truetype");
   font-weight:700;
   font-style:normal;
   font-display:swap;
 }
 @font-face{
   font-family:"Tajawal";
-  src:url("fonts/Tajawal-ExtraBold.ttf") format("truetype");
+  src:
+    url("./fonts/Tajawal-ExtraBold.woff2") format("woff2"),
+    url("./fonts/Tajawal-ExtraBold.ttf") format("truetype");
   font-weight:800 900;
   font-style:normal;
   font-display:swap;
@@ -47,7 +67,7 @@
 *{box-sizing:border-box}
 html,body{height:100%}
 body{margin:0;font-family:var(--app-font);background:linear-gradient(180deg,#edf3fa,#f7f9fc);color:var(--text)}
-button,input,select{font-family:var(--app-font)}
+button,input,select,textarea,.esri-widget,.esri-popup__main-container,.esri-popup__header-title,.esri-popup__content{font-family:var(--app-font)}
 .hidden{display:none !important}
 
 .app-shell{display:grid;grid-template-columns:320px 1fr;height:100vh;min-height:0;overflow:hidden}
