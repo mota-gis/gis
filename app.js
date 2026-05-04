@@ -77,6 +77,7 @@
     saveEditBtn: document.getElementById('saveEditBtn'),
     cancelEditBtn: document.getElementById('cancelEditBtn'),
     exportGeoJsonBtn: document.getElementById('exportGeoJsonBtn'),
+    coordModeToggleBtn: document.getElementById('coordModeToggleBtn'),
     exportDialog: document.getElementById('exportDialog'),
     confirmExportBtn: document.getElementById('confirmExportBtn'),
     cancelExportDialogBtn: document.getElementById('cancelExportDialogBtn'),
@@ -98,6 +99,7 @@
     mapSearchClear: document.getElementById('mapSearchClear'),
     searchSuggestions: document.getElementById('searchSuggestions'),
     layerHelpModal: document.getElementById('layerHelpModal'),
+    layerStatusSummary: document.getElementById('layerStatusSummary'),
     closeLayerHelpBtn: document.getElementById('closeLayerHelpBtn'),
     aiAssistantBtn: document.getElementById('aiAssistantBtn'),
     aiAssistantPanel: document.getElementById('aiAssistantPanel'),
@@ -165,17 +167,21 @@
     liwaLabels: 500000,
     railVisible: 650000,
     highwayVisible: 300000,
-    highwayLabels: 90000,
-    majorPlacesVisible: 650000,
-    majorPlacesLabels: 350000,
+    highwayLabels: 200000,
+    highwayDetailLabels: 90000,
+    // طبقات التوجيه المكاني: يجب أن تبقى هناك أسماء/معالم مرجعية في كل مستوى تكبير.
+    // المدن الرئيسية تظهر مبكراً حتى لا تصبح الخريطة فارغة أثناء الانتقال من المستوى الوطني إلى المحلي.
+    majorPlacesVisible: 1200000,
+    majorPlacesLabels: 1200000,
+    majorTownLabels: 350000,
     detailPlacesVisible: 100000,
-    detailPlaceLabels: 45000,
+    detailPlaceLabels: 60000,
     archVisible: 100000,
-    archLabels: 45000,
+    archLabels: 60000,
     hotelsVisible: 80000,
-    hotelsLabels: 30000,
+    hotelsLabels: 35000,
     restaurantsVisible: 80000,
-    restaurantsLabels: 30000,
+    restaurantsLabels: 35000,
     // طبقات المؤسسات النقطية تظهر متأخرة لأنها كثيفة جدًا.
     fiberEduVisible: 90000,
     fiberGovVisible: 90000,
@@ -184,11 +190,58 @@
     fiberLabels: 30000,
     fiberSchoolLabels: 20000,
     masarVisible: 300000,
-    masarLabels: 90000,
+    masarLabels: 180000,
     contourVisible: 50000,
     contourLabels: 30000
   };
 
+
+  // إعدادات خاصة للعرض ثلاثي الأبعاد: المشهد 3D يحتاج طبقات أقل، أسماء عربية فقط، وحدود خفيفة.
+  // لا نعتمد على topo-3d ولا نعرض الطبقات الكثيفة مبكرًا حتى لا تتزاحم النقاط في SceneView.
+  const SCENE3D_THRESHOLDS = {
+    // 3D Terrain Imagery Profile النهائي:
+    // صور جوية + world-elevation كخلفية، ثم طبقات سياحية خفيفة تظهر تدريجيًا.
+    // لا نعرض الطبقات السكانية/الخدمية الكثيفة في 3D لأنها تفسد المشهد وتخفي المعالم السياحية.
+    liwaVisible: 650000,
+    liwaLabels: 0,
+    railVisible: 400000,
+    highwayVisible: 450000,
+    highwayLabels: 90000,
+    majorPlacesVisible: 1500000,
+    majorPlacesLabels: 1200000,
+    majorTownLabels: 0,
+    // التجمعات المحلية التفصيلية مخفية في 3D نهائيًا؛ المدن الرئيسية فقط تظهر كمرجع.
+    detailPlacesVisible: 0,
+    detailPlaceLabels: 0,
+    archVisible: 180000,
+    archLabels: 60000,
+    hotelsVisible: 60000,
+    hotelsLabels: 25000,
+    restaurantsVisible: 30000,
+    restaurantsLabels: 15000,
+    fiberEduVisible: 0,
+    fiberGovVisible: 0,
+    fiberHealthVisible: 0,
+    fiberSchoolsVisible: 0,
+    fiberLabels: 0,
+    fiberSchoolLabels: 0,
+    masarVisible: 350000,
+    masarLabels: 100000,
+    contourVisible: 20000,
+    contourLabels: 10000
+  };
+
+  const SCENE3D_MAIN_ROADS_EXPRESSION = "highway_type IN ('motorway','motorway_link','trunk','trunk_link','primary','primary_link','secondary','secondary_link')";
+  const SCENE3D_CITY_ONLY_EXPRESSION = "settlement_type = 'city'";
+
+  // حد المقياس الأدنى على مستوى الطبقة نفسها يجب أن يسمح بأوسع نطاق بين 2D و3D.
+  // التحكم الفعلي بالإظهار/الإخفاء يتم لاحقاً داخل updateScaleDrivenHierarchy().
+  const LAYER_MIN_SCALE_LIMITS = Object.fromEntries(
+    Object.keys(SCALE_THRESHOLDS).map((key) => [
+      key,
+      Math.max(SCALE_THRESHOLDS[key] || 0, SCENE3D_THRESHOLDS[key] || 0)
+    ])
+  );
 
   const STAGE_LABELS = {
     national: 'المحافظات — عرض عام',
@@ -209,6 +262,7 @@
   const state = {
     basemap: 'none',
     viewMode: '2d',
+    terrain3dAutoEnabled: false,
     highlightHandle: null,
     selectedGraphic: null,
     selectedLayerKey: null,
@@ -237,6 +291,9 @@
     panClampBusy: false,
     lockRecenterBusy: false,
     searchNavigationBusy: false,
+    controlledZoomBusy: false,
+    controlledNavigationBusy: false,
+    suppressNationalLockUntil: 0,
     renderedSearchResults: [],
     aiMode: 'map',
     lastAiContext: null,
@@ -251,6 +308,8 @@
     aiResultItems: [],
     aiPanelMinimized: false
   };
+
+  let hierarchyUpdateRaf = 0;
 
   function decodeArabicMojibake(value) {
     if (value == null) return '';
@@ -1097,6 +1156,23 @@
     const regionalAlpha = imageryOn ? 0.018 : 0.075;
     const outlineColor = imageryOn ? '#ffffff' : '#64748b';
 
+    // في 3D لا نستخدم تلوين المحافظات القوي؛ نتركها حدودًا خفيفة وتعبئة شبه شفافة
+    // حتى لا تغطي التضاريس أو الصور الجوية، وحتى يبقى المشهد متناسقًا مع الهوية العربية للتطبيق.
+    if (mode === 'scene') {
+      return {
+        type: 'simple',
+        symbol: {
+          type: 'simple-fill',
+          // 3D: حدود المحافظات فقط تقريباً، بدون تلوين تصنيفي حتى لا تبقى ألوان 2D ظاهرة.
+          color: [255, 255, 255, 0.0],
+          outline: {
+            color: imageryOn ? '#ffffff' : '#8a6f1f',
+            width: imageryOn ? 1.65 : 1.05
+          }
+        }
+      };
+    }
+
     if (mode === 'national') {
       return {
         type: 'unique-value',
@@ -1138,15 +1214,24 @@
 
   const govLabelClass = {
     labelExpressionInfo: { expression: '$feature.gov_name_ar' },
-    symbol: { type: 'text', color: '#17324d', haloColor: '#ffffff', haloSize: 1.8, font: { size: 11, family: 'Tajawal', weight: 'bold' } },
+    symbol: { type: 'text', color: '#17324d', haloColor: '#ffffff', haloSize: 1.8, font: { size: 11, family: 'Arial Unicode MS', weight: 'bold' } },
     labelPlacement: 'always-horizontal',
+    deconflictionStrategy: 'static'
+  };
+
+  const orientationCityLabelClass = {
+    // أسماء توجيهية تظهر مبكراً أثناء التكبير: مدن رئيسية فقط حتى لا يحدث ازدحام.
+    where: "settlement_type = 'city'",
+    labelExpressionInfo: { expression: '$feature.place_name_ar' },
+    symbol: { type: 'text', color: '#0f2f4a', haloColor: '#ffffff', haloSize: 2.2, font: { size: 10.5, family: 'Arial Unicode MS', weight: 'bold' } },
+    labelPlacement: 'above-center',
     deconflictionStrategy: 'static'
   };
 
   const majorCityLabelClass = {
     where: "settlement_type = 'city'",
     labelExpressionInfo: { expression: '$feature.place_name_ar' },
-    symbol: { type: 'text', color: '#17324d', haloColor: '#ffffff', haloSize: 2, font: { size: 9.5, family: 'Tajawal', weight: 'bold' } },
+    symbol: { type: 'text', color: '#17324d', haloColor: '#ffffff', haloSize: 2, font: { size: 9.5, family: 'Arial Unicode MS', weight: 'bold' } },
     labelPlacement: 'above-center',
     deconflictionStrategy: 'static'
   };
@@ -1154,37 +1239,46 @@
   const majorTownLabelClass = {
     where: "settlement_type = 'town'",
     labelExpressionInfo: { expression: '$feature.place_name_ar' },
-    symbol: { type: 'text', color: '#35536c', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8.5, family: 'Tajawal', weight: 'normal' } },
+    symbol: { type: 'text', color: '#35536c', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8.5, family: 'Arial Unicode MS', weight: 'normal' } },
     labelPlacement: 'above-center',
     deconflictionStrategy: 'static'
   };
 
   const detailPlaceLabelClass = {
     labelExpressionInfo: { expression: '$feature.place_name_ar' },
-    symbol: { type: 'text', color: '#35536c', haloColor: '#ffffff', haloSize: 2, font: { size: 8, family: 'Tajawal', weight: 'normal' } },
+    symbol: { type: 'text', color: '#35536c', haloColor: '#ffffff', haloSize: 2, font: { size: 8, family: 'Arial Unicode MS', weight: 'normal' } },
     labelPlacement: 'above-center',
     deconflictionStrategy: 'static'
   };
 
   const archLabelClass = {
     labelExpressionInfo: { expression: '$feature.site_name_ar' },
-    symbol: { type: 'text', color: '#6b3f00', haloColor: '#ffffff', haloSize: 2, font: { size: 9, family: 'Tajawal', weight: 'bold' } },
+    symbol: { type: 'text', color: '#6b3f00', haloColor: '#ffffff', haloSize: 2, font: { size: 9, family: 'Arial Unicode MS', weight: 'bold' } },
     labelPlacement: 'above-center',
     deconflictionStrategy: 'static'
   };
 
-  const liwaLabelClass = { labelExpressionInfo: { expression: '$feature.liwa_name_ar' }, symbol: { type: 'text', color: '#24506f', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8.5, family: 'Tajawal', weight: 'bold' } }, labelPlacement: 'always-horizontal', deconflictionStrategy: 'static' };
-  const railLabelClass = { labelExpressionInfo: { expression: '$feature.rail_name_ar' }, symbol: { type: 'text', color: '#1f2937', haloColor: '#ffffff', haloSize: 1.7, font: { size: 8, family: 'Tajawal', weight: 'bold' } }, labelPlacement: 'center-along', deconflictionStrategy: 'static' };
-  const highwayLabelClass = {
-    where: "road_label_ar <> ''",
+  const liwaLabelClass = { labelExpressionInfo: { expression: '$feature.liwa_name_ar' }, symbol: { type: 'text', color: '#24506f', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8.5, family: 'Arial Unicode MS', weight: 'bold' } }, labelPlacement: 'always-horizontal', deconflictionStrategy: 'static' };
+  const railLabelClass = { labelExpressionInfo: { expression: '$feature.rail_name_ar' }, symbol: { type: 'text', color: '#1f2937', haloColor: '#ffffff', haloSize: 1.7, font: { size: 8, family: 'Arial Unicode MS', weight: 'bold' } }, labelPlacement: 'center-along', deconflictionStrategy: 'static' };
+  const mainHighwayLabelClass = {
+    // في المستوى المحلي نعرض أسماء الطرق الرئيسية فقط كمرجع ملاحي، ثم نعرض أسماء أكثر عند التكبير التفصيلي.
+    where: "road_label_ar <> '' AND (highway_type = 'motorway' OR highway_type = 'trunk' OR highway_type = 'primary')",
     labelExpressionInfo: { expression: '$feature.road_label_ar' },
-    symbol: { type: 'text', color: '#7c2d12', haloColor: '#ffffff', haloSize: 1.5, font: { size: 7.5, family: 'Tajawal', weight: 'bold' } },
+    symbol: { type: 'text', color: '#7c2d12', haloColor: '#ffffff', haloSize: 1.7, font: { size: 8, family: 'Arial Unicode MS', weight: 'bold' } },
     labelPlacement: 'center-along',
     deconflictionStrategy: 'static'
   };
-  const fiberLabelClass = { labelExpressionInfo: { expression: '$feature.fiber_name_ar' }, symbol: { type: 'text', color: '#083344', haloColor: '#ffffff', haloSize: 1.7, font: { size: 7.5, family: 'Tajawal', weight: 'normal' } }, labelPlacement: 'above-center', deconflictionStrategy: 'static' };
-  const masarLabelClass = { labelExpressionInfo: { expression: '$feature.masar_title' }, symbol: { type: 'text', color: '#064e3b', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8, family: 'Tajawal', weight: 'bold' } }, labelPlacement: 'center-along', deconflictionStrategy: 'static' };
-  const contourLabelClass = { labelExpressionInfo: { expression: '$feature.contour_label' }, symbol: { type: 'text', color: '#334155', haloColor: '#ffffff', haloSize: 1.6, font: { size: 7, family: 'Tajawal', weight: 'bold' } }, labelPlacement: 'center-along', deconflictionStrategy: 'static' };
+
+  const highwayLabelClass = {
+    where: "road_label_ar <> ''",
+    labelExpressionInfo: { expression: '$feature.road_label_ar' },
+    symbol: { type: 'text', color: '#7c2d12', haloColor: '#ffffff', haloSize: 1.5, font: { size: 7.5, family: 'Arial Unicode MS', weight: 'bold' } },
+    labelPlacement: 'center-along',
+    deconflictionStrategy: 'static'
+  };
+  const fiberLabelClass = { labelExpressionInfo: { expression: '$feature.fiber_name_ar' }, symbol: { type: 'text', color: '#083344', haloColor: '#ffffff', haloSize: 1.7, font: { size: 7.5, family: 'Arial Unicode MS', weight: 'normal' } }, labelPlacement: 'above-center', deconflictionStrategy: 'static' };
+  const masarLabelClass = { labelExpressionInfo: { expression: '$feature.masar_title' }, symbol: { type: 'text', color: '#064e3b', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8, family: 'Arial Unicode MS', weight: 'bold' } }, labelPlacement: 'center-along', deconflictionStrategy: 'static' };
+  const contourLabelClass = { labelExpressionInfo: { expression: '$feature.contour_label' }, symbol: { type: 'text', color: '#334155', haloColor: '#ffffff', haloSize: 1.6, font: { size: 7, family: 'Arial Unicode MS', weight: 'bold' } }, labelPlacement: 'center-along', deconflictionStrategy: 'static' };
 
 
 
@@ -1919,7 +2013,7 @@
         haloColor: [255, 255, 255, 0.95],
         haloSize: 1.8,
         yoffset: 22,
-        font: { family: 'Tajawal', size: 10, weight: 'bold' }
+        font: { family: 'Arial Unicode MS', size: 10, weight: 'bold' }
       }
     }));
   }
@@ -3255,7 +3349,7 @@
       symbol: {
         type: 'text', text, color: kind === 'reference' ? [30, 64, 175, 1] : [15, 23, 42, 1],
         haloColor: [255, 255, 255, 0.96], haloSize: 1.6, yoffset: 20,
-        font: { family: 'Tajawal', size: 10, weight: 'bold' }
+        font: { family: 'Arial Unicode MS', size: 10, weight: 'bold' }
       }
     }));
   }
@@ -3515,7 +3609,7 @@
         haloColor: [255, 255, 255, 1],
         haloSize: 2.5,
         yoffset: 42,
-        font: { family: 'Tajawal', size: 12, weight: 'bold' }
+        font: { family: 'Arial Unicode MS', size: 12, weight: 'bold' }
       }
     }));
 
@@ -3721,7 +3815,7 @@
 
   const hotelLabelClass = {
     labelExpressionInfo: { expression: '$feature.hotel_name_ar' },
-    symbol: { type: 'text', color: '#4c1d95', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8, family: 'Tajawal', weight: 'bold' } },
+    symbol: { type: 'text', color: '#4c1d95', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8, family: 'Arial Unicode MS', weight: 'bold' } },
     labelPlacement: 'above-center',
     deconflictionStrategy: 'static'
   };
@@ -3753,7 +3847,7 @@
 
   const restaurantLabelClass = {
     labelExpressionInfo: { expression: '$feature.restaurant_name_ar' },
-    symbol: { type: 'text', color: '#7c2d12', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8, family: 'Tajawal', weight: 'bold' } },
+    symbol: { type: 'text', color: '#7c2d12', haloColor: '#ffffff', haloSize: 1.8, font: { size: 8, family: 'Arial Unicode MS', weight: 'bold' } },
     labelPlacement: 'above-center',
     deconflictionStrategy: 'static'
   };
@@ -3830,14 +3924,26 @@
     };
   }
 
-  function clusterReduction(clusterColor = '#0f766e') {
+  function clusterReduction(options = {}) {
+    const cfg = typeof options === 'string' ? { color: options } : (options || {});
+    const clusterColor = cfg.color || '#0f766e';
+    const radius = cfg.radius || '72px';
+    const maxScale = Number(cfg.maxScale || 25000);
+    const title = cfg.title || 'تجميع عناصر';
+    const noun = cfg.noun || 'عنصر';
+    const minSize = cfg.minSize || '26px';
+    const maxSize = cfg.maxSize || '54px';
     return {
       type: 'cluster',
-      clusterRadius: '72px',
+      clusterRadius: radius,
+      clusterMinSize: minSize,
+      clusterMaxSize: maxSize,
+      // عند هذا المقياس أو أقرب منه تتفكك التجميعات وتظهر النقاط الأصلية.
+      maxScale,
       popupEnabled: true,
       popupTemplate: {
-        title: 'تجميع عناصر',
-        content: 'يحتوي هذا التجميع على {cluster_count} عنصر. قم بالتكبير لعرض العناصر منفردة.'
+        title,
+        content: `يحتوي هذا التجميع على {cluster_count} ${noun}. قم بالتكبير لعرض العناصر منفردة.`
       },
       labelingInfo: [{
         deconflictionStrategy: 'none',
@@ -3847,7 +3953,7 @@
           color: 'white',
           haloColor: clusterColor,
           haloSize: 1.5,
-          font: { size: 11, family: 'Tajawal', weight: 'bold' }
+          font: { size: 11, family: 'Arial Unicode MS', weight: 'bold' }
         },
         labelPlacement: 'center-center'
       }],
@@ -3857,15 +3963,25 @@
           type: 'simple-marker',
           style: 'circle',
           color: clusterColor,
-          size: 24,
+          size: 28,
           outline: { color: [255, 255, 255, 0.95], width: 2 }
-        }
+        },
+        visualVariables: [{
+          type: 'size',
+          field: 'cluster_count',
+          stops: [
+            { value: 2, size: 24 },
+            { value: 25, size: 34 },
+            { value: 100, size: 46 },
+            { value: 300, size: 56 }
+          ]
+        }]
       }
     };
   }
 
   const govLayer = new GeoJSONLayer({
-    title: 'المحافظات',
+    title: 'المحافظات — 2D ملونة',
     url: govUrl,
     objectIdField: 'OBJECTID',
     outFields: ['*'],
@@ -3877,9 +3993,23 @@
     labelingInfo: [govLabelClass]
   });
 
-  const liwaLayer = new GeoJSONLayer({ title: 'الألوية', url: liwaUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: SCALE_THRESHOLDS.liwaVisible, maxScale: 0, popupEnabled: true, popupTemplate: liwaPopupTemplate, labelsVisible: false, renderer: { type: 'simple', symbol: { type: 'simple-fill', color: [255, 255, 255, 0.04], outline: { color: '#2563eb', width: 0.8 } } }, labelingInfo: [liwaLabelClass] });
-  const railLayer = new GeoJSONLayer({ title: 'السكك الحديدية', url: railUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: SCALE_THRESHOLDS.railVisible, maxScale: 0, popupEnabled: true, popupTemplate: railPopupTemplate, labelsVisible: false, renderer: { type: 'simple', symbol: { type: 'simple-line', color: '#374151', width: 2.2, style: 'dash' } }, labelingInfo: [railLabelClass] });
-  const highwayLayer = new GeoJSONLayer({ title: 'الطرق', url: highwayUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: SCALE_THRESHOLDS.highwayVisible, maxScale: 0, popupEnabled: true, popupTemplate: highwayPopupTemplate, labelsVisible: false, renderer: { type: 'unique-value', field: 'highway_type', defaultSymbol: { type: 'simple-line', color: '#8b5e3c', width: 0.8 }, uniqueValueInfos: [{ value: 'motorway', symbol: { type: 'simple-line', color: '#c2410c', width: 2.3 } }, { value: 'trunk', symbol: { type: 'simple-line', color: '#c2410c', width: 2.1 } }, { value: 'primary', symbol: { type: 'simple-line', color: '#e09f3e', width: 1.8 } }, { value: 'secondary', symbol: { type: 'simple-line', color: '#8b5e3c', width: 1.3 } }, { value: 'tertiary', symbol: { type: 'simple-line', color: '#a16207', width: 1.05 } }, { value: 'residential', symbol: { type: 'simple-line', color: '#7c8aa5', width: 0.55 } }, { value: 'service', symbol: { type: 'simple-line', color: '#94a3b8', width: 0.45, style: 'short-dot' } }, { value: 'track', symbol: { type: 'simple-line', color: '#64748b', width: 0.45, style: 'dash' } }] }, labelingInfo: [highwayLabelClass] });
+  const govBoundary3DLayer = new GeoJSONLayer({
+    title: 'حدود المحافظات — 3D',
+    url: govUrl,
+    objectIdField: 'OBJECTID',
+    outFields: ['*'],
+    visible: false,
+    popupEnabled: true,
+    popupTemplate: govPopupTemplate,
+    labelsVisible: false,
+    renderer: buildGovRenderer('scene'),
+    labelingInfo: [govLabelClass],
+    listMode: 'hide'
+  });
+
+  const liwaLayer = new GeoJSONLayer({ title: 'الألوية', url: liwaUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: LAYER_MIN_SCALE_LIMITS.liwaVisible, maxScale: 0, popupEnabled: true, popupTemplate: liwaPopupTemplate, labelsVisible: false, renderer: { type: 'simple', symbol: { type: 'simple-fill', color: [255, 255, 255, 0.04], outline: { color: '#2563eb', width: 0.8 } } }, labelingInfo: [liwaLabelClass] });
+  const railLayer = new GeoJSONLayer({ title: 'السكك الحديدية', url: railUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: LAYER_MIN_SCALE_LIMITS.railVisible, maxScale: 0, popupEnabled: true, popupTemplate: railPopupTemplate, labelsVisible: false, renderer: { type: 'simple', symbol: { type: 'simple-line', color: '#374151', width: 2.2, style: 'dash' } }, labelingInfo: [railLabelClass] });
+  const highwayLayer = new GeoJSONLayer({ title: 'الطرق', url: highwayUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: LAYER_MIN_SCALE_LIMITS.highwayVisible, maxScale: 0, popupEnabled: true, popupTemplate: highwayPopupTemplate, labelsVisible: false, renderer: { type: 'unique-value', field: 'highway_type', defaultSymbol: { type: 'simple-line', color: '#8b5e3c', width: 0.8 }, uniqueValueInfos: [{ value: 'motorway', symbol: { type: 'simple-line', color: '#c2410c', width: 2.3 } }, { value: 'trunk', symbol: { type: 'simple-line', color: '#c2410c', width: 2.1 } }, { value: 'primary', symbol: { type: 'simple-line', color: '#e09f3e', width: 1.8 } }, { value: 'secondary', symbol: { type: 'simple-line', color: '#8b5e3c', width: 1.3 } }, { value: 'tertiary', symbol: { type: 'simple-line', color: '#a16207', width: 1.05 } }, { value: 'residential', symbol: { type: 'simple-line', color: '#7c8aa5', width: 0.55 } }, { value: 'service', symbol: { type: 'simple-line', color: '#94a3b8', width: 0.45, style: 'short-dot' } }, { value: 'track', symbol: { type: 'simple-line', color: '#64748b', width: 0.45, style: 'dash' } }] }, labelingInfo: [highwayLabelClass] });
 
   const majorPlacesLayer = new GeoJSONLayer({
     title: 'المدن الرئيسية',
@@ -3889,7 +4019,7 @@
     visible: false,
     popupEnabled: true,
     popupTemplate: majorPlacePopupTemplate,
-    minScale: SCALE_THRESHOLDS.majorPlacesVisible,
+    minScale: LAYER_MIN_SCALE_LIMITS.majorPlacesVisible,
     maxScale: 0,
     labelsVisible: false,
     renderer: {
@@ -3912,9 +4042,9 @@
     visible: false,
     popupEnabled: true,
     popupTemplate: detailPlacePopupTemplate,
-    minScale: SCALE_THRESHOLDS.detailPlacesVisible,
+    minScale: LAYER_MIN_SCALE_LIMITS.detailPlacesVisible,
     maxScale: 0,
-    featureReduction: clusterReduction('#0f766e'),
+    featureReduction: clusterReduction({ color: '#64748b', radius: '70px', maxScale: 60000, title: 'تجميع تجمعات محلية', noun: 'تجمع محلي', minSize: '24px', maxSize: '46px' }),
     labelsVisible: false,
     renderer: {
       type: 'simple',
@@ -3931,9 +4061,8 @@
     visible: false,
     popupEnabled: true,
     popupTemplate: archPopupTemplate,
-    minScale: SCALE_THRESHOLDS.archVisible,
+    minScale: LAYER_MIN_SCALE_LIMITS.archVisible,
     maxScale: 0,
-    featureReduction: clusterReduction('#b45309'),
     labelsVisible: false,
     renderer: {
       type: 'simple',
@@ -3950,9 +4079,9 @@
     visible: false,
     popupEnabled: true,
     popupTemplate: hotelsPopupTemplate,
-    minScale: SCALE_THRESHOLDS.hotelsVisible,
+    minScale: LAYER_MIN_SCALE_LIMITS.hotelsVisible,
     maxScale: 0,
-    featureReduction: clusterReduction('#7c3aed'),
+    featureReduction: clusterReduction({ color: '#7c3aed', radius: '66px', maxScale: 25000, title: 'تجميع فنادق ومنشآت إيواء', noun: 'فندق/منشأة' }),
     labelsVisible: false,
     renderer: hotelsRenderer,
     labelingInfo: [hotelLabelClass]
@@ -3967,14 +4096,14 @@
     visible: false,
     popupEnabled: true,
     popupTemplate: restaurantsPopupTemplate,
-    minScale: SCALE_THRESHOLDS.restaurantsVisible,
+    minScale: LAYER_MIN_SCALE_LIMITS.restaurantsVisible,
     maxScale: 0,
-    featureReduction: clusterReduction('#f97316'),
+    featureReduction: clusterReduction({ color: '#f97316', radius: '82px', maxScale: 20000, title: 'تجميع مطاعم وخدمات طعام', noun: 'مطعم/خدمة' }),
     labelsVisible: false,
     renderer: restaurantsRenderer,
     labelingInfo: [restaurantLabelClass]
   });
-  function buildFiberLayer(title, url, emoji, color, size = 21, minScale = 90000) {
+  function buildFiberLayer(title, url, emoji, color, size = 21, minScale = 90000, clusterOptions = {}) {
     return new GeoJSONLayer({
       title,
       url,
@@ -3983,7 +4112,7 @@
       visible: false,
       minScale,
       maxScale: 0,
-      featureReduction: clusterReduction(color),
+      featureReduction: clusterOptions === false ? null : clusterReduction({ color, radius: clusterOptions.radius || '62px', maxScale: clusterOptions.maxScale || 25000, title: clusterOptions.title || ('تجميع ' + title), noun: clusterOptions.noun || 'موقع' }),
       popupEnabled: true,
       popupTemplate: fiberPopupTemplate,
       labelsVisible: false,
@@ -3991,18 +4120,18 @@
       labelingInfo: [fiberLabelClass]
     });
   }
-  const fiberEduLayer = buildFiberLayer('مديريات التربية', fiberEduUrl, '🎓', '#0ea5e9', 22, SCALE_THRESHOLDS.fiberEduVisible);
-  const fiberGovLayer = buildFiberLayer('الجهات الحكومية', fiberGovUrl, '🏢', '#ef4444', 22, SCALE_THRESHOLDS.fiberGovVisible);
-  const fiberHealthLayer = buildFiberLayer('المؤسسات الصحية', fiberHealthUrl, '🏥', '#10b981', 23, SCALE_THRESHOLDS.fiberHealthVisible);
-  const fiberSchoolsLayer = buildFiberLayer('المدارس', fiberSchoolsUrl, '🏫', '#8b5cf6', 19, SCALE_THRESHOLDS.fiberSchoolsVisible);
-  const masarLayer = new GeoJSONLayer({ title: 'مسار درب الأردن', url: masarUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: SCALE_THRESHOLDS.masarVisible, maxScale: 0, popupEnabled: true, popupTemplate: masarPopupTemplate, labelsVisible: false, renderer: { type: 'simple', symbol: { type: 'simple-line', color: '#0f766e', width: 3.2 } }, labelingInfo: [masarLabelClass] });
+  const fiberEduLayer = buildFiberLayer('مديريات التربية', fiberEduUrl, '🎓', '#0ea5e9', 22, SCALE_THRESHOLDS.fiberEduVisible, false);
+  const fiberGovLayer = buildFiberLayer('الجهات الحكومية', fiberGovUrl, '🏢', '#ef4444', 22, SCALE_THRESHOLDS.fiberGovVisible, { radius: '62px', maxScale: 25000, noun: 'جهة' });
+  const fiberHealthLayer = buildFiberLayer('المؤسسات الصحية', fiberHealthUrl, '🏥', '#10b981', 23, SCALE_THRESHOLDS.fiberHealthVisible, { radius: '56px', maxScale: 20000, noun: 'مؤسسة صحية' });
+  const fiberSchoolsLayer = buildFiberLayer('المدارس', fiberSchoolsUrl, '🏫', '#8b5cf6', 19, SCALE_THRESHOLDS.fiberSchoolsVisible, { radius: '92px', maxScale: 15000, noun: 'مدرسة' });
+  const masarLayer = new GeoJSONLayer({ title: 'مسار درب الأردن', url: masarUrl, objectIdField: 'OBJECTID', outFields: ['*'], visible: false, minScale: LAYER_MIN_SCALE_LIMITS.masarVisible, maxScale: 0, popupEnabled: true, popupTemplate: masarPopupTemplate, labelsVisible: false, renderer: { type: 'simple', symbol: { type: 'simple-line', color: '#0f766e', width: 3.2 } }, labelingInfo: [masarLabelClass] });
   const contourLayer = new GeoJSONLayer({
     title: 'خطوط الكنتور',
     url: contourUrl,
     objectIdField: 'OBJECTID',
     outFields: ['*'],
     visible: false,
-    minScale: SCALE_THRESHOLDS.contourVisible,
+    minScale: LAYER_MIN_SCALE_LIMITS.contourVisible,
     maxScale: 0,
     popupEnabled: true,
     popupTemplate: contourPopupTemplate,
@@ -4048,9 +4177,24 @@
   state.importedLayer = importedLayer;
   state.editLayer = editLayer;
 
+  const sceneDensePointLayers = [detailPlacesLayer, hotelsLayer, restaurantsLayer, fiberGovLayer, fiberHealthLayer, fiberSchoolsLayer].filter(Boolean);
+  sceneDensePointLayers.forEach((layer) => {
+    layer.__featureReduction2d = layer.featureReduction || null;
+  });
+
+  function syncFeatureReductionForCurrentView() {
+    const disableInScene = state.viewMode === '3d';
+    sceneDensePointLayers.forEach((layer) => {
+      const desired = disableInScene ? null : layer.__featureReduction2d;
+      if (layer.featureReduction !== desired) {
+        layer.featureReduction = desired;
+      }
+    });
+  }
+
   const map = new Map({
     basemap: null,
-    layers: [aerialImageryLayer, contourLayer, govLayer, liwaLayer, railLayer, highwayLayer, majorPlacesLayer, detailPlacesLayer, fiberEduLayer, fiberGovLayer, fiberHealthLayer, fiberSchoolsLayer, masarLayer, archLayer, hotelsLayer, restaurantsLayer, importedLayer, editLayer, aiResultsLayer]
+    layers: [aerialImageryLayer, govLayer, govBoundary3DLayer, liwaLayer, contourLayer, railLayer, highwayLayer, masarLayer, majorPlacesLayer, detailPlacesLayer, archLayer, hotelsLayer, restaurantsLayer, fiberEduLayer, fiberGovLayer, fiberHealthLayer, fiberSchoolsLayer, importedLayer, editLayer, aiResultsLayer]
   });
 
   const OSM_BUILDINGS_2D_ASIA_ITEM_ID = 'efcea3961e8e417aae1f341b397684a2';
@@ -4110,6 +4254,7 @@
         title: 'التضاريس Hillshade',
         visible: false,
         opacity: 0.42,
+        blendMode: 'multiply',
         source: [new ImageElement({
           image: 'data/hillshade.png',
           georeference: new ExtentAndRotationGeoreference({
@@ -4117,7 +4262,7 @@
           })
         })]
       });
-      map.add(hillshadeLayer, 0);
+      map.add(hillshadeLayer, 1);
     }
   } catch (e) {
     console.warn('Hillshade MediaLayer was not loaded; vector layers remain available.', e);
@@ -4157,7 +4302,284 @@
   let sceneView = null;
   let view = mapView;
 
+  // =========================================================
+  // Coordinate widget: compact single-mode display
+  // WGS84 + Palestine 1923 / Palestine Grid (EPSG:28191)
+  // زر الشريط يبدّل نوع الإحداثيات، والصندوق يعرض النوع الحالي فقط.
+  // =========================================================
+  const PALESTINE_GRID_PROJ4 = '+proj=cass +lat_0=31.7340969444444 +lon_0=35.2120805555556 +x_0=170251.555 +y_0=126867.909 +a=6378300.789 +b=6356566.435 +towgs84=-275.7224,94.7824,340.8944,-8.001,-4.42,-11.821,1 +units=m +no_defs +type=crs';
+  let lastCoordinate = null;
+  let coordinatesPinned = false;
+  let coordinateDisplayMode = 'wgs84';
 
+  function ensureCoordinateStyles() {
+    if (document.getElementById('coordinateWidgetStyles')) return;
+    const style = document.createElement('style');
+    style.id = 'coordinateWidgetStyles';
+    style.textContent = `
+      .coordinate-widget {
+        position: absolute;
+        right: 12px;
+        bottom: 32px;
+        left: auto;
+        top: auto;
+        z-index: 60;
+        direction: rtl;
+        width: 146px;
+        max-width: calc(100% - 24px);
+        padding: 6px 7px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.93);
+        border: 1px solid rgba(15, 23, 42, 0.12);
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.13);
+        color: #0f172a;
+        font-family: var(--app-font, 'Tajawal', 'Segoe UI', Tahoma, Arial, sans-serif);
+        backdrop-filter: blur(8px);
+        pointer-events: auto;
+        opacity: .92;
+        transition: opacity .18s ease, transform .18s ease;
+      }
+      .coordinate-widget:hover { opacity: 1; }
+      .coordinate-widget.is-pinned { border-color: rgba(37, 99, 235, 0.48); }
+      .coordinate-widget__head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        margin-bottom: 3px;
+        font-weight: 900;
+        font-size: 10.5px;
+        line-height: 1.2;
+      }
+      .coordinate-widget__title {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1;
+        text-align: right;
+      }
+      .coordinate-widget__tools { display:flex; gap:4px; align-items:center; flex-shrink:0; }
+      .coordinate-widget__btn {
+        width: 24px;
+        height: 22px;
+        display: inline-grid;
+        place-items: center;
+        border: 1px solid rgba(148, 163, 184, 0.42);
+        background: #f8fafc;
+        color: #0f172a;
+        border-radius: 7px;
+        padding: 0;
+        font-size: 12px;
+        cursor: pointer;
+        font-weight: 900;
+      }
+      .coordinate-widget__btn:hover { background: #eef2ff; border-color: rgba(37, 99, 235, 0.35); }
+      .coordinate-widget__status {
+        font-size: 8.5px;
+        color: #64748b;
+        font-weight: 800;
+        margin-bottom: 2px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .coordinate-widget.is-pinned .coordinate-widget__status { color: #2563eb; }
+      .coordinate-value {
+        direction: ltr;
+        text-align: left;
+        font-family: Consolas, 'Courier New', monospace;
+        color: #111827;
+        line-height: 1.32;
+        font-size: 10.5px;
+        border-top: 1px solid rgba(148, 163, 184, 0.18);
+        padding-top: 4px;
+        white-space: nowrap;
+      }
+      .coord-mode-btn {
+        min-width: 42px !important;
+        width: 42px;
+        direction: ltr;
+        unicode-bidi: isolate;
+        font-weight: 900;
+        font-size: 16px;
+        padding-inline: 0 !important;
+      }
+      @media (max-width: 640px) {
+        .coordinate-widget { right: 10px; bottom: 34px; width: 138px; }
+        .coord-mode-btn { min-width: 40px !important; width: 40px; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function ensureCoordinateWidget() {
+    let widget = document.getElementById('coordinateWidget');
+    if (widget) return widget;
+    ensureCoordinateStyles();
+    widget = document.createElement('div');
+    widget.id = 'coordinateWidget';
+    widget.className = 'coordinate-widget';
+    widget.innerHTML = `
+      <div class="coordinate-widget__head">
+        <span id="coordTitle" class="coordinate-widget__title">🌐 WGS84</span>
+        <span class="coordinate-widget__tools">
+          <button id="copyVisibleCoordBtn" class="coordinate-widget__btn" type="button" title="نسخ الإحداثيات المعروضة" aria-label="نسخ الإحداثيات المعروضة">📋</button>
+        </span>
+      </div>
+      <div id="coordStatus" class="coordinate-widget__status" title="تتحدث الإحداثيات مباشرة مع حركة الماوس">مباشر</div>
+      <div id="coordValue" class="coordinate-value">Lat: --<br>Lon: --</div>
+    `;
+    const mapWrap = document.getElementById('mapWrap');
+    (mapWrap || document.body).appendChild(widget);
+    widget.querySelector('#copyVisibleCoordBtn')?.addEventListener('click', () => copyCoordinateText());
+    widget.querySelector('#coordStatus')?.addEventListener('click', () => {
+      // تم إلغاء التثبيت التلقائي: الإحداثيات تبقى مباشرة دائمًا مع حركة الماوس.
+      coordinatesPinned = false;
+      widget.classList.remove('is-pinned');
+      const status = document.getElementById('coordStatus');
+      if (status) status.textContent = 'مباشر';
+    });
+    return widget;
+  }
+
+  function updateCoordModeButton() {
+    const btn = els.coordModeToggleBtn || document.getElementById('coordModeToggleBtn');
+    if (!btn) return;
+    if (coordinateDisplayMode === 'wgs84') {
+      btn.textContent = '🌐';
+      btn.title = 'نظام الإحداثيات: WGS84. اضغط للتحويل إلى Cassini';
+      btn.setAttribute('aria-label', 'نظام الإحداثيات WGS84، اضغط للتحويل إلى Cassini');
+    } else {
+      btn.textContent = '📐';
+      btn.title = 'نظام الإحداثيات: Cassini / Palestine Grid. اضغط للتحويل إلى WGS84';
+      btn.setAttribute('aria-label', 'نظام الإحداثيات Cassini، اضغط للتحويل إلى WGS84');
+    }
+  }
+
+  function toggleCoordinateMode() {
+    coordinateDisplayMode = coordinateDisplayMode === 'wgs84' ? 'cassini' : 'wgs84';
+    updateCoordModeButton();
+    renderCoordinateWidget();
+  }
+
+  function setupProj4Definition() {
+    try {
+      if (window.proj4) {
+        window.proj4.defs('EPSG:28191', PALESTINE_GRID_PROJ4);
+        return true;
+      }
+    } catch (error) {
+      console.warn('تعذر تعريف نظام Palestine Grid EPSG:28191', error);
+    }
+    return false;
+  }
+
+  function normalizeToWgs84(point) {
+    if (!point) return null;
+    try {
+      let geographicPoint = point;
+      if (point.spatialReference?.wkid === 3857 || point.spatialReference?.wkid === 102100) {
+        geographicPoint = webMercatorUtils.webMercatorToGeographic(point);
+      }
+      const lon = Number.isFinite(geographicPoint.longitude) ? geographicPoint.longitude : geographicPoint.x;
+      const lat = Number.isFinite(geographicPoint.latitude) ? geographicPoint.latitude : geographicPoint.y;
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+      return { lon, lat };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function wgs84ToCassini(lon, lat) {
+    try {
+      if (!setupProj4Definition()) return null;
+      const result = window.proj4('EPSG:4326', 'EPSG:28191', [lon, lat]);
+      if (!Array.isArray(result) || !Number.isFinite(result[0]) || !Number.isFinite(result[1])) return null;
+      return { easting: result[0], northing: result[1] };
+    } catch (error) {
+      console.warn('فشل تحويل WGS84 إلى Cassini/Palestine Grid', error);
+      return null;
+    }
+  }
+
+  function formatCoord(value, digits) {
+    return Number.isFinite(value) ? value.toFixed(digits) : '--';
+  }
+
+  function currentCoordinateText() {
+    if (!lastCoordinate) return '';
+    if (coordinateDisplayMode === 'cassini') {
+      return lastCoordinate.cassini
+        ? `E: ${formatCoord(lastCoordinate.cassini.easting, 2)}, N: ${formatCoord(lastCoordinate.cassini.northing, 2)}`
+        : 'Cassini: غير متاح';
+    }
+    return `Lat: ${formatCoord(lastCoordinate.lat, 6)}, Lon: ${formatCoord(lastCoordinate.lon, 6)}`;
+  }
+
+  function renderCoordinateWidget() {
+    const widget = ensureCoordinateWidget();
+    const titleEl = document.getElementById('coordTitle');
+    const valueEl = document.getElementById('coordValue');
+    if (titleEl) titleEl.textContent = coordinateDisplayMode === 'cassini' ? '📐 Cassini' : '🌐 WGS84';
+    if (!valueEl) return;
+    if (!lastCoordinate) {
+      valueEl.innerHTML = coordinateDisplayMode === 'cassini' ? 'E: --<br>N: --' : 'Lat: --<br>Lon: --';
+      return;
+    }
+    if (coordinateDisplayMode === 'cassini') {
+      valueEl.innerHTML = lastCoordinate.cassini
+        ? `E: ${formatCoord(lastCoordinate.cassini.easting, 2)}<br>N: ${formatCoord(lastCoordinate.cassini.northing, 2)}`
+        : 'E: غير متاح<br>N: غير متاح';
+    } else {
+      valueEl.innerHTML = `Lat: ${formatCoord(lastCoordinate.lat, 6)}<br>Lon: ${formatCoord(lastCoordinate.lon, 6)}`;
+    }
+    widget.classList.toggle('is-pinned', coordinatesPinned);
+  }
+
+  function updateCoordinateWidget(point, pinned = false) {
+    const wgs = normalizeToWgs84(point);
+    if (!wgs) return;
+    // تم إلغاء منطق تثبيت الإحداثيات نهائيًا.
+    // أي Click أو Identify لا يوقف التحديث المباشر مع حركة الماوس.
+    coordinatesPinned = false;
+    const cassini = wgs84ToCassini(wgs.lon, wgs.lat);
+    lastCoordinate = { ...wgs, cassini };
+    const statusEl = document.getElementById('coordStatus');
+    if (statusEl) statusEl.textContent = 'مباشر';
+    renderCoordinateWidget();
+  }
+
+  async function copyCoordinateText() {
+    const text = currentCoordinateText();
+    if (!text) return;
+    try {
+      await navigator.clipboard?.writeText(text);
+      if (els.featureInfo) els.featureInfo.textContent = `تم نسخ الإحداثيات: ${text}`;
+    } catch (error) {
+      console.warn('تعذر نسخ الإحداثيات', error);
+    }
+  }
+
+  function bindCoordinateWidget(targetView) {
+    if (!targetView || targetView.__coordinateWidgetBound) return;
+    targetView.__coordinateWidgetBound = true;
+    targetView.on('pointer-move', (event) => {
+      if (!event) return;
+      const mapPoint = targetView.toMap({ x: event.x, y: event.y });
+      updateCoordinateWidget(mapPoint, false);
+    });
+    targetView.on('click', (event) => {
+      // Click يحدث الإحداثية لحظة الضغط فقط، ولا يثبتها.
+      const mapPoint = targetView.toMap({ x: event.x, y: event.y });
+      updateCoordinateWidget(mapPoint, false);
+    });
+  }
+
+  ensureCoordinateWidget();
+  updateCoordModeButton();
+  els.coordModeToggleBtn?.addEventListener('click', toggleCoordinateMode);
+  setupProj4Definition();
+  updateCoordinateWidget({ longitude: 35.9106, latitude: 31.9539, spatialReference: { wkid: 4326 } });
+  bindCoordinateWidget(mapView);
 
   function setEditStatus(message, tone = 'info') {
     if (!els.editStatusBox) return;
@@ -4600,6 +5022,42 @@
     }
   }
 
+
+  function setSceneTerrainHint(message) {
+    if (!els.featureInfo || state.selectedGraphic) return;
+    els.featureInfo.textContent = message;
+  }
+
+  function applySceneTerrainProfile(targetView = view) {
+    if (!targetView || !isSceneView(targetView)) return;
+    try { map.ground = 'world-elevation'; } catch (e) {}
+
+    // 3D النهائي يعتمد على World Imagery كخلفية مرئية وworld-elevation كسطح ارتفاعات.
+    // Hillshade يبقى اختياريًا فقط؛ لا يعمل تلقائيًا حتى لا يظهر كمربع رمادي أو يغطي الصور الجوية.
+    if (hillshadeLayer) {
+      hillshadeLayer.visible = !!els.toggleHillshade?.checked;
+      hillshadeLayer.opacity = state.basemap === 'imagery' ? 0.18 : 0.24;
+      hillshadeLayer.blendMode = 'multiply';
+    }
+
+    applySceneVisualQuality(targetView);
+  }
+
+  function activateSceneTerrainOverlay({ autoCheck = false, message = true } = {}) {
+    if (state.viewMode !== '3d') return;
+    // لا نفعّل Hillshade تلقائيًا في 3D النهائي؛ الصور الجوية + world-elevation هي الخلفية الأساسية.
+    // يبقى Hillshade خيارًا يدويًا من لوحة الطبقات فقط.
+    if (autoCheck && false && state.terrain3dAutoEnabled && els.toggleHillshade && !els.toggleHillshade.checked) {
+      els.toggleHillshade.checked = true;
+    }
+    applySceneTerrainProfile(view);
+    if (message) {
+      setSceneTerrainHint(state.basemap === 'imagery'
+        ? 'تم إبراز التضاريس في 3D: world-elevation مفعّل مع Hillshade خفيف فوق الصور الجوية وبدون أسماء من خريطة الأساس.'
+        : 'تم إبراز التضاريس في 3D: world-elevation مفعّل مع Hillshade واضح وزاوية كاميرا مائلة، وبدون topo-3d أو أسماء إنجليزية.');
+    }
+  }
+
   function applyBaseViewSettings(targetView = view) {
     if (!targetView) return;
     try {
@@ -4630,6 +5088,7 @@
       targetView.popup.highlightEnabled = true;
     }
     applySceneVisualQuality(targetView);
+    if (isSceneView(targetView)) applySceneTerrainProfile(targetView);
   }
 
   applyBaseViewSettings(mapView);
@@ -4646,30 +5105,256 @@
   }
 
   function updateGovRenderer(stage) {
-    const rendererKey = stage === 'national' ? 'national' : stage === 'regional' ? 'regional' : 'outline';
+    const is3D = state.viewMode === '3d';
+    const rendererKey = is3D
+      ? `scene-${state.basemap}`
+      : (stage === 'national' ? 'national' : stage === 'regional' ? 'regional' : 'outline');
+
+    // في 3D نفرض Renderer الحدود الشفافة في كل تحديث، لأن بقاء renderer الوطني
+    // من 2D كان سبب استمرار ألوان المحافظات بعد التحويل إلى المشهد ثلاثي الأبعاد.
+    if (is3D) {
+      state.currentGovRendererKey = rendererKey;
+      govLayer.opacity = 1;
+      govLayer.renderer = buildGovRenderer('outline');
+      govBoundary3DLayer.opacity = 1;
+      govBoundary3DLayer.renderer = buildGovRenderer('scene');
+      return;
+    }
+
+    govLayer.opacity = 1;
     if (rendererKey === state.currentGovRendererKey) return;
     state.currentGovRendererKey = rendererKey;
     govLayer.renderer = buildGovRenderer(rendererKey === 'outline' ? stage : rendererKey);
   }
 
   function describeScaleStage(stage) {
+    if (state.viewMode === '3d') {
+      if (stage === 'national') return 'العرض ثلاثي الأبعاد يعمل بملف مبسط: حدود المحافظات وأسماؤها العربية مع المدن الرئيسية فقط، بدون أسماء إنجليزية من خريطة الأساس وبدون تلوين محافظات قوي.';
+      if (stage === 'regional') return 'العرض ثلاثي الأبعاد في مستوى إقليمي: تظهر المدن الرئيسية والطرق/المسارات المهمة تدريجياً، وتبقى الطبقات الكثيفة مخفية حتى لا يزدحم المشهد.';
+      if (stage === 'local') return 'العرض ثلاثي الأبعاد في مستوى محلي: تظهر المعالم السياحية والطرق الرئيسية والفنادق حسب التكبير، مع رموز أخف من 2D وبدون clustering كثيف.';
+      return 'العرض ثلاثي الأبعاد في مستوى تفصيلي: تظهر النقاط السياحية والخدمات المختارة بحذر، بينما تبقى الطبقات الثقيلة مثل المدارس والكنتور محدودة للحفاظ على الأداء والوضوح.';
+    }
     if (stage === 'national') {
-      return 'المشهد الآن على مستوى وطني عام: تظهر المحافظات فقط كطبقة قراءة رئيسية مع أسمائها. الطبقات التفصيلية تبقى جاهزة في البحث لكنها لا تظهر على الخريطة إلا بعد التكبير حسب الهرمية.';
+      return 'المشهد الآن على مستوى وطني عام: تظهر المحافظات وأسماؤها كمرجع رئيسي، ثم تبدأ أسماء المدن الرئيسية بالظهور تدريجياً مع أول مستويات التكبير حتى لا تصبح الخريطة فارغة.';
     }
     if (stage === 'regional') {
-      return 'المشهد الآن في مستوى إقليمي: تظهر المحافظات والحدود الإدارية والمدن الرئيسية، وتبدأ طبقات السكك ومسار درب الأردن بالظهور إذا كانت مفعّلة. التفاصيل الدقيقة ما زالت مخفية حتى لا تتزاحم الخريطة.';
+      return 'المشهد الآن في مستوى إقليمي: تظهر المحافظات والمدن الرئيسية كمرجع توجيهي واضح، بينما تبقى التفاصيل الكثيفة مخفية حتى لا تتزاحم الخريطة.';
     }
     if (stage === 'local') {
-      return 'المشهد الآن في مستوى محلي: تظهر الألوية والسكك والطرق الرئيسية ومسار درب الأردن، وتبدأ المواقع الأثرية بالظهور إذا كانت مفعّلة. أسماء الطبقات تظهر حسب مستوى التكبير المناسب.';
+      return 'المشهد الآن في مستوى محلي: تظهر المدن والبلدات الرئيسية والطرق الرئيسية كدلائل توجيهية، ثم تبدأ المواقع السياحية والخدمات بالظهور حسب الخيارات المفعّلة.';
     }
-    return 'المشهد الآن في مستوى تفصيلي: تظهر المواقع الأثرية والمواقع المؤسسية والتجمعات المحلية وخطوط الكنتور حسب الخيارات المفعّلة، مع إظهار الأسماء العربية من الحقول المناسبة ومنع التداخل قدر الإمكان.';
+    return 'المشهد الآن في مستوى تفصيلي: تظهر النقاط المحلية والمواقع السياحية والخدمية مع أسماء منتقاة وغير مزدحمة، ويتم تفكيك التجميعات تدريجياً لإظهار المواقع الحقيقية.';
+  }
+
+  function compactScale(scale) {
+    const value = Number(scale || 0);
+    if (!value) return '—';
+    return '1:' + fmt(Math.round(value));
+  }
+
+  function setLayerRowState(key, options = {}) {
+    const statusEl = document.querySelector(`[data-layer-status="${key}"]`);
+    if (!statusEl) return 0;
+    const row = statusEl.closest('.layer-row');
+    const enabled = !!options.enabled;
+    const visible = !!options.visible;
+    const minScale = Number(options.minScale || 0);
+    const scale = Number(options.scale || view?.scale || 0);
+    const label = options.label || 'الطبقة';
+    const modeLimited = !!options.modeLimited;
+    row?.classList.remove('is-visible', 'is-scale-hidden', 'is-disabled');
+    statusEl.className = 'layer-status';
+    statusEl.textContent = '';
+    statusEl.title = '';
+
+    if (!enabled) {
+      statusEl.classList.add('is-off');
+      row?.classList.add('is-disabled');
+      return 0;
+    }
+    if (modeLimited) {
+      statusEl.textContent = '⛔';
+      statusEl.classList.add('is-3d-limited');
+      statusEl.title = `${label}: تم تبسيطها في العرض ثلاثي الأبعاد للحفاظ على الأداء.`;
+      row?.classList.add('is-scale-hidden');
+      return 1;
+    }
+    if (visible) {
+      statusEl.textContent = '●';
+      statusEl.classList.add('is-visible');
+      statusEl.title = `${label}: ظاهرة الآن على الخريطة.`;
+      row?.classList.add('is-visible');
+      return 0;
+    }
+    if (minScale && scale > minScale) {
+      statusEl.textContent = '🔍';
+      statusEl.classList.add('is-scale-hidden');
+      statusEl.title = `${label}: مفعّلة لكنها مخفية بسبب مقياس الرسم. تظهر عند ${compactScale(minScale)} أو أقرب.`;
+      row?.classList.add('is-scale-hidden');
+      return 1;
+    }
+    statusEl.textContent = '◌';
+    statusEl.classList.add('is-scale-hidden');
+    statusEl.title = `${label}: مفعّلة لكنها غير ظاهرة حاليًا.`;
+    row?.classList.add('is-scale-hidden');
+    return 1;
+  }
+
+  function setDependentToggleState(toggle, enabled) {
+    if (!toggle) return;
+    toggle.disabled = !enabled;
+    const row = toggle.closest('.layer-row');
+    row?.classList.toggle('is-disabled', !enabled);
+  }
+
+  function updateLayerStatusSummary(hiddenCount, scale) {
+    if (!els.layerStatusSummary) return;
+    if (state.viewMode === '3d') {
+      if (hiddenCount > 0) {
+        els.layerStatusSummary.textContent = `🔍 3D Profile نهائي: هناك ${hiddenCount} طبقة/تسمية مفعّلة لكنها مخفية أو مبسطة عمدًا عند ${compactScale(scale)} لحماية وضوح الصور الجوية والتضاريس.`;
+      } else {
+        els.layerStatusSummary.textContent = '● 3D نظيف: صور جوية + world-elevation، حدود محافظات خفيفة، مدن وطرق رئيسية، وبدون أسماء إنجليزية أو طبقات كثيفة.';
+      }
+      return;
+    }
+    if (hiddenCount > 0) {
+      els.layerStatusSummary.textContent = `🔍 هناك ${hiddenCount} طبقة/تسمية مفعّلة لكنها مخفية بسبب المقياس الحالي ${compactScale(scale)}. كبّر الخريطة لعرضها.`;
+    } else {
+      els.layerStatusSummary.textContent = '● الطبقات المفعّلة الظاهرة الآن متوافقة مع مقياس الرسم الحالي.';
+    }
+  }
+
+  function scheduleScaleDrivenHierarchyUpdate() {
+    if (hierarchyUpdateRaf) cancelAnimationFrame(hierarchyUpdateRaf);
+    hierarchyUpdateRaf = requestAnimationFrame(() => {
+      hierarchyUpdateRaf = 0;
+      try {
+        updateScaleBadge();
+        updateScaleDrivenHierarchy();
+      } catch (error) {
+        console.warn('تعذر تحديث هرمية الطبقات بعد تغيير المقياس/الكاميرا:', error);
+      }
+    });
+  }
+
+  function isNavigationGuardSuspended() {
+    return !!(state.controlledZoomBusy || state.controlledNavigationBusy || Date.now() < Number(state.suppressNationalLockUntil || 0));
+  }
+
+  function suspendNavigationGuards(ms = 900) {
+    state.suppressNationalLockUntil = Math.max(Number(state.suppressNationalLockUntil || 0), Date.now() + ms);
+  }
+
+  function updateMajorPlaces3DFilter(scale, is3D) {
+    if (!majorPlacesLayer) return;
+
+    // 3D النهائي يعرض المدن الرئيسية فقط دائمًا؛ البلدات/التجمعات المحلية تبقى خارج المشهد
+    // حتى لا تظهر دبابيس كثيفة فوق الصور الجوية والتضاريس.
+    const desiredExpression = is3D ? SCENE3D_CITY_ONLY_EXPRESSION : null;
+
+    if ((majorPlacesLayer.definitionExpression || null) !== desiredExpression) {
+      majorPlacesLayer.definitionExpression = desiredExpression;
+    }
+  }
+
+  function updateHighway3DFilter(is3D) {
+    if (!highwayLayer) return;
+
+    // في 3D نعرض الطرق الرئيسية فقط. تغيير المقياس وحده لا يكفي لأن طبقة الطرق تحتوي
+    // شوارع محلية ومسارات وخدمات كثيرة جدًا؛ لذلك نستخدم definitionExpression.
+    const desiredExpression = is3D ? SCENE3D_MAIN_ROADS_EXPRESSION : null;
+    if ((highwayLayer.definitionExpression || null) !== desiredExpression) {
+      highwayLayer.definitionExpression = desiredExpression;
+    }
+  }
+
+  function getViewCenterForNavigation() {
+    return view?.center?.clone?.()
+      || view?.extent?.center?.clone?.()
+      || state.nationalCenter?.clone?.()
+      || state.jordanTargetExtent?.center?.clone?.()
+      || null;
+  }
+
+  function normalize3DScaleTarget(targetScale) {
+    const scale = Number(targetScale || 0);
+    if (!Number.isFinite(scale) || scale <= 0) return Number(state.nationalScale || NATIONAL_HOME_SCALE_FALLBACK);
+    const nationalScale = Number(state.nationalScale || NATIONAL_HOME_SCALE_FALLBACK);
+    // لا نسمح بالتصغير خارج الأردن الكامل، ولا نسمح بالتكبير المفرط الذي يسبب قفزات في SceneView.
+    return Math.min(Math.max(scale, 3500), nationalScale);
+  }
+
+  function getNavigationCenterPoint() {
+    const center = getViewCenterForNavigation();
+    if (center) return center;
+    return state.nationalCenter?.clone?.() || state.jordanTargetExtent?.center?.clone?.() || null;
+  }
+
+  async function goToScaleKeepingContext(targetScale, duration = 260) {
+    const scale = normalize3DScaleTarget(targetScale);
+    const center = getNavigationCenterPoint();
+    if (!center || !view?.goTo) return;
+
+    state.controlledNavigationBusy = true;
+    suspendNavigationGuards(duration + 850);
+    try {
+      if (isSceneView(view)) {
+        // حل جذري لزر + و - في 3D:
+        // لا نستخدم goTo({ target, scale }) وحدها لأنها قد تُفسّر في SceneView كعودة للـ extent الكامل
+        // عند وجود قيود الأردن أو ميل الكاميرا. نقرّب/نبعّد الكاميرا حول نفس المركز ثم نطبّق الهرمية.
+        const currentScale = Math.max(1, Number(view.scale || state.nationalScale || scale));
+        const ratio = scale / currentScale; // أقل من 1 = تكبير، أكبر من 1 = تصغير
+        const currentCamera = view.camera?.clone?.();
+
+        if (currentCamera?.position) {
+          const camera = currentCamera.clone ? currentCamera.clone() : currentCamera;
+          camera.tilt = Math.max(20, Math.min(55, Number(camera.tilt ?? 38)));
+          camera.heading = Number(camera.heading ?? 0);
+          // في 3D الإحساس البصري بالزوم يعتمد على ارتفاع الكاميرا. نحافظ على المركز ولا نعيد fit الأردن.
+          camera.position.z = Math.max(70, Number(camera.position.z || 9000) * ratio);
+          try {
+            await view.goTo(camera, { duration, easing: 'ease-in-out' });
+          } catch (cameraError) {
+            // fallback آمن: استخدم zoom إن كان متاحًا، بدون fit extent.
+            const zoomDelta = ratio < 1 ? 1 : -1;
+            const nextZoom = Math.max(1, Math.min(22, Number(view.zoom || 7) + zoomDelta));
+            await view.goTo({ target: center, zoom: nextZoom, tilt: camera.tilt, heading: camera.heading }, { duration, easing: 'ease-in-out' });
+          }
+        } else {
+          const zoomDelta = ratio < 1 ? 1 : -1;
+          const nextZoom = Math.max(1, Math.min(22, Number(view.zoom || 7) + zoomDelta));
+          await view.goTo({ target: center, zoom: nextZoom }, { duration, easing: 'ease-in-out' });
+        }
+
+        // إذا كان الهدف تصغيرًا، لا نتجاوز مشهد الأردن الكامل.
+        if (scale >= Number(state.nationalScale || 0) * 0.995) {
+          await fitJordanFullView(0);
+        }
+
+        updateScaleBadge();
+        scheduleScaleDrivenHierarchyUpdate();
+        return;
+      }
+
+      await view.goTo({ center, scale }, { duration, easing: 'ease-in-out' });
+      updateScaleBadge();
+      scheduleScaleDrivenHierarchyUpdate();
+    } finally {
+      state.controlledNavigationBusy = false;
+      suspendNavigationGuards(350);
+    }
   }
 
   function updateScaleDrivenHierarchy() {
     const scale = Number(view.scale || 0);
     const stage = getStage(scale);
+    const is3D = state.viewMode === '3d';
+    const thresholds = is3D ? SCENE3D_THRESHOLDS : SCALE_THRESHOLDS;
     state.currentStage = stage;
     updateGovRenderer(stage);
+    syncFeatureReductionForCurrentView();
+    updateMajorPlaces3DFilter(scale, is3D);
+    updateHighway3DFilter(is3D);
 
     // الهرمية المعتمدة: اختيار المستخدم يعني أن الطبقة مسموحة،
     // أما الظهور الفعلي على الخريطة فيخضع لمقياس الرسم حتى لا تظهر كل الطبقات مرة واحدة.
@@ -4696,33 +5381,40 @@
     const forcePlaces = canForceSelected && (selectedKey === 'place-major' || selectedKey === 'place-detail');
     const forceFiber = (key) => canForceSelected && selectedKey === key;
 
-    const showLiwa = (allowLiwa && scale <= SCALE_THRESHOLDS.liwaVisible) || forceSelected('liwa');
-    const showRail = (allowRail && scale <= SCALE_THRESHOLDS.railVisible) || forceSelected('rail');
-    const showHighway = (allowHighway && scale <= SCALE_THRESHOLDS.highwayVisible) || forceSelected('highway');
-    const showMajorPlaces = (allowPlaces && scale <= SCALE_THRESHOLDS.majorPlacesVisible) || forceSelected('place-major');
-    const showDetailPlaces = (allowPlaces && scale <= SCALE_THRESHOLDS.detailPlacesVisible) || forceSelected('place-detail');
-    const showArch = (allowArch && scale <= SCALE_THRESHOLDS.archVisible) || forceSelected('arch');
-    const showHotels = (allowHotels && scale <= SCALE_THRESHOLDS.hotelsVisible) || forceSelected('hotels');
-    const showRestaurants = (allowRestaurants && scale <= SCALE_THRESHOLDS.restaurantsVisible) || forceSelected('restaurants');
-    const showMasar = (allowMasar && scale <= SCALE_THRESHOLDS.masarVisible) || forceSelected('masar');
-    const showContours = (allowContours && scale <= SCALE_THRESHOLDS.contourVisible) || forceSelected('contour');
-    const showFiberEdu = (allowFiberEdu && scale <= SCALE_THRESHOLDS.fiberEduVisible) || forceFiber('fiber-edu');
-    const showFiberGov = (allowFiberGov && scale <= SCALE_THRESHOLDS.fiberGovVisible) || forceFiber('fiber-gov_agency');
-    const showFiberHealth = (allowFiberHealth && scale <= SCALE_THRESHOLDS.fiberHealthVisible) || forceFiber('fiber-health');
-    const showFiberSchools = (allowFiberSchools && scale <= SCALE_THRESHOLDS.fiberSchoolsVisible) || forceFiber('fiber-school');
+    const showLiwa = (allowLiwa && thresholds.liwaVisible > 0 && scale <= thresholds.liwaVisible) || forceSelected('liwa');
+    const showRail = (allowRail && thresholds.railVisible > 0 && scale <= thresholds.railVisible) || forceSelected('rail');
+    const showHighway = (allowHighway && thresholds.highwayVisible > 0 && scale <= thresholds.highwayVisible) || forceSelected('highway');
+    const showMajorPlaces = (allowPlaces && thresholds.majorPlacesVisible > 0 && scale <= thresholds.majorPlacesVisible) || forceSelected('place-major');
+    const showDetailPlaces = !is3D && ((allowPlaces && thresholds.detailPlacesVisible > 0 && scale <= thresholds.detailPlacesVisible) || forceSelected('place-detail')); // 3D: التجمعات المحلية التفصيلية مخفية نهائيًا
+    const showArch = (allowArch && thresholds.archVisible > 0 && scale <= thresholds.archVisible) || forceSelected('arch');
+    const showHotels = (allowHotels && thresholds.hotelsVisible > 0 && scale <= thresholds.hotelsVisible) || forceSelected('hotels');
+    const showRestaurants = (allowRestaurants && thresholds.restaurantsVisible > 0 && scale <= thresholds.restaurantsVisible) || forceSelected('restaurants');
+    const showMasar = (allowMasar && thresholds.masarVisible > 0 && scale <= thresholds.masarVisible) || forceSelected('masar');
+    const showContours = (allowContours && thresholds.contourVisible > 0 && scale <= thresholds.contourVisible) || forceSelected('contour');
+    const showFiberEdu = (allowFiberEdu && thresholds.fiberEduVisible > 0 && scale <= thresholds.fiberEduVisible) || forceFiber('fiber-edu');
+    const showFiberGov = (allowFiberGov && thresholds.fiberGovVisible > 0 && scale <= thresholds.fiberGovVisible) || forceFiber('fiber-gov_agency');
+    const showFiberHealth = (allowFiberHealth && thresholds.fiberHealthVisible > 0 && scale <= thresholds.fiberHealthVisible) || forceFiber('fiber-health');
+    const showFiberSchools = (allowFiberSchools && thresholds.fiberSchoolsVisible > 0 && scale <= thresholds.fiberSchoolsVisible) || forceFiber('fiber-school');
 
-    govLayer.visible = allowGov;
-    govLayer.labelsVisible = !!state.labelPrefs.gov && allowGov && (stage === 'national' || stage === 'regional');
+    // في 2D نستخدم طبقة المحافظات الملونة، وفي 3D نستخدم طبقة حدود منفصلة فقط.
+    govLayer.visible = allowGov && !is3D;
+    govBoundary3DLayer.visible = allowGov && is3D;
+    // تبقى أسماء المحافظات كمرجع توجيهي، وتختفي فقط عند التفاصيل العالية جداً.
+    govLayer.labelsVisible = !is3D && !!state.labelPrefs.gov && allowGov && scale > 40000;
+    govBoundary3DLayer.labelsVisible = is3D && !!state.labelPrefs.gov && allowGov && scale > 40000;
     govLayer.labelingInfo = [govLabelClass];
+    govBoundary3DLayer.labelingInfo = [govLabelClass];
 
     liwaLayer.visible = showLiwa;
-    liwaLayer.labelsVisible = (!!state.labelPrefs.liwa && showLiwa && scale <= SCALE_THRESHOLDS.liwaLabels) || forceSelected('liwa');
+    liwaLayer.labelsVisible = (!!state.labelPrefs.liwa && showLiwa && scale <= thresholds.liwaLabels) || forceSelected('liwa');
 
     railLayer.visible = showRail;
-    railLayer.labelsVisible = (!!state.labelPrefs.rail && showRail && scale <= 350000) || forceSelected('rail');
+    railLayer.labelsVisible = (!!state.labelPrefs.rail && showRail && scale <= (is3D ? 250000 : 350000)) || forceSelected('rail');
 
     highwayLayer.visible = showHighway;
-    highwayLayer.labelsVisible = (!!state.labelPrefs.highway && showHighway && scale <= SCALE_THRESHOLDS.highwayLabels) || forceSelected('highway');
+    const highwayDetailLabelThreshold = is3D ? 0 : SCALE_THRESHOLDS.highwayDetailLabels;
+    highwayLayer.labelingInfo = is3D ? [mainHighwayLabelClass] : (scale > highwayDetailLabelThreshold ? [mainHighwayLabelClass] : [highwayLabelClass]);
+    highwayLayer.labelsVisible = (!!state.labelPrefs.highway && showHighway && scale <= thresholds.highwayLabels) || (!is3D && forceSelected('highway'));
 
     majorPlacesLayer.visible = showMajorPlaces;
     detailPlacesLayer.visible = showDetailPlaces;
@@ -4734,29 +5426,82 @@
     fiberGovLayer.visible = showFiberGov;
     fiberHealthLayer.visible = showFiberHealth;
     fiberSchoolsLayer.visible = showFiberSchools;
-    fiberEduLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberEdu && scale <= SCALE_THRESHOLDS.fiberLabels) || forceSelected('fiber-edu');
-    fiberGovLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberGov && scale <= SCALE_THRESHOLDS.fiberLabels) || forceSelected('fiber-gov_agency');
-    fiberHealthLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberHealth && scale <= SCALE_THRESHOLDS.fiberLabels) || forceSelected('fiber-health');
-    fiberSchoolsLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberSchools && scale <= SCALE_THRESHOLDS.fiberSchoolLabels) || forceSelected('fiber-school');
+    fiberEduLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberEdu && scale <= thresholds.fiberLabels) || forceSelected('fiber-edu');
+    fiberGovLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberGov && scale <= thresholds.fiberLabels) || forceSelected('fiber-gov_agency');
+    fiberHealthLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberHealth && scale <= thresholds.fiberLabels) || forceSelected('fiber-health');
+    fiberSchoolsLayer.labelsVisible = (!!state.labelPrefs.fiber && showFiberSchools && scale <= thresholds.fiberSchoolLabels) || forceSelected('fiber-school');
 
     masarLayer.visible = showMasar;
-    masarLayer.labelsVisible = (!!state.labelPrefs.masar && showMasar && scale <= SCALE_THRESHOLDS.masarLabels) || forceSelected('masar');
+    masarLayer.labelsVisible = (!!state.labelPrefs.masar && showMasar && scale <= thresholds.masarLabels) || forceSelected('masar');
 
     contourLayer.visible = showContours;
-    contourLayer.labelsVisible = showContours && scale <= SCALE_THRESHOLDS.contourLabels;
-    if (hillshadeLayer) hillshadeLayer.visible = !!els.toggleHillshade.checked;
+    contourLayer.labelsVisible = showContours && scale <= thresholds.contourLabels;
+    if (hillshadeLayer) {
+      hillshadeLayer.visible = !!els.toggleHillshade.checked;
+      hillshadeLayer.opacity = is3D ? (state.basemap === 'imagery' ? 0.18 : 0.24) : 0.42;
+      hillshadeLayer.blendMode = 'multiply';
+    }
 
-    if (stage === 'regional') { majorPlacesLayer.labelingInfo = [majorCityLabelClass]; }
+    // أسماء المدن/البلدات تتدرج حسب المقياس:
+    // بعيد: مدن رئيسية فقط، متوسط: مدن + بلدات، تفصيلي: تضاف الأسماء المحلية من طبقة التفاصيل.
+    const majorTownLabelThreshold = thresholds.majorTownLabels || SCALE_THRESHOLDS.majorTownLabels;
+    if (is3D) { majorPlacesLayer.labelingInfo = [orientationCityLabelClass]; }
+    else if (scale > majorTownLabelThreshold) { majorPlacesLayer.labelingInfo = [orientationCityLabelClass]; }
     else { majorPlacesLayer.labelingInfo = [majorCityLabelClass, majorTownLabelClass]; }
 
-    majorPlacesLayer.labelsVisible = (!!state.labelPrefs.place && showMajorPlaces && scale <= SCALE_THRESHOLDS.majorPlacesLabels) || forceSelected('place-major');
-    detailPlacesLayer.labelsVisible = (!!state.labelPrefs.place && showDetailPlaces && scale <= SCALE_THRESHOLDS.detailPlaceLabels) || forceSelected('place-detail');
-    archLayer.labelsVisible = (!!state.labelPrefs.arch && showArch && scale <= SCALE_THRESHOLDS.archLabels) || forceSelected('arch');
-    hotelsLayer.labelsVisible = (!!state.labelPrefs.hotels && showHotels && scale <= SCALE_THRESHOLDS.hotelsLabels) || forceSelected('hotels');
-    restaurantsLayer.labelsVisible = (!!state.labelPrefs.restaurants && showRestaurants && scale <= SCALE_THRESHOLDS.restaurantsLabels) || forceSelected('restaurants');
+    majorPlacesLayer.labelsVisible = (!!state.labelPrefs.place && showMajorPlaces && scale <= thresholds.majorPlacesLabels) || (!is3D && forceSelected('place-major'));
+    detailPlacesLayer.labelsVisible = !is3D && ((!!state.labelPrefs.place && showDetailPlaces && scale <= thresholds.detailPlaceLabels) || forceSelected('place-detail'));
+    archLayer.labelsVisible = (!!state.labelPrefs.arch && showArch && scale <= thresholds.archLabels) || forceSelected('arch');
+    hotelsLayer.labelsVisible = (!!state.labelPrefs.hotels && showHotels && scale <= thresholds.hotelsLabels) || forceSelected('hotels');
+    restaurantsLayer.labelsVisible = (!!state.labelPrefs.restaurants && showRestaurants && scale <= thresholds.restaurantsLabels) || forceSelected('restaurants');
+
+    setDependentToggleState(els.toggleGovLabels, allowGov);
+    setDependentToggleState(els.toggleLiwaLabels, allowLiwa);
+    setDependentToggleState(els.toggleRailLabels, allowRail);
+    setDependentToggleState(els.toggleHighwayLabels, allowHighway);
+    setDependentToggleState(els.togglePlaceLabels, allowPlaces);
+    setDependentToggleState(els.toggleArchLabels, allowArch);
+    setDependentToggleState(els.toggleHotelLabels, allowHotels);
+    setDependentToggleState(els.toggleRestaurantLabels, allowRestaurants);
+    setDependentToggleState(els.toggleMasarLabels, allowMasar);
+    setDependentToggleState(els.toggleFiberLabels, allowFiberEdu || allowFiberGov || allowFiberHealth || allowFiberSchools);
+
+    const showPlaces = showMajorPlaces || showDetailPlaces;
+    const showFiberAny = showFiberEdu || showFiberGov || showFiberHealth || showFiberSchools;
+    const fiberAllowedAny = allowFiberEdu || allowFiberGov || allowFiberHealth || allowFiberSchools;
+    const placesLabelsVisible = majorPlacesLayer.labelsVisible || detailPlacesLayer.labelsVisible;
+    const fiberLabelsVisible = fiberEduLayer.labelsVisible || fiberGovLayer.labelsVisible || fiberHealthLayer.labelsVisible || fiberSchoolsLayer.labelsVisible;
+    let hiddenStatusCount = 0;
+    hiddenStatusCount += setLayerRowState('gov', { label: 'المحافظات', enabled: allowGov, visible: is3D ? govBoundary3DLayer.visible : govLayer.visible, scale });
+    hiddenStatusCount += setLayerRowState('gov-labels', { label: 'أسماء المحافظات', enabled: allowGov && !!els.toggleGovLabels.checked, visible: is3D ? govBoundary3DLayer.labelsVisible : govLayer.labelsVisible, scale });
+    hiddenStatusCount += setLayerRowState('liwa', { label: 'الألوية', enabled: allowLiwa, visible: showLiwa, minScale: thresholds.liwaVisible, scale });
+    hiddenStatusCount += setLayerRowState('liwa-labels', { label: 'أسماء الألوية', enabled: allowLiwa && !!els.toggleLiwaLabels.checked, visible: liwaLayer.labelsVisible, minScale: thresholds.liwaLabels, scale });
+    hiddenStatusCount += setLayerRowState('rails', { label: 'السكك الحديدية', enabled: allowRail, visible: showRail, minScale: thresholds.railVisible, scale });
+    hiddenStatusCount += setLayerRowState('rail-labels', { label: 'أسماء السكك', enabled: allowRail && !!els.toggleRailLabels.checked, visible: railLayer.labelsVisible, minScale: (is3D ? 250000 : 350000), scale });
+    hiddenStatusCount += setLayerRowState('highways', { label: 'الطرق', enabled: allowHighway, visible: showHighway, minScale: thresholds.highwayVisible, scale });
+    hiddenStatusCount += setLayerRowState('highway-labels', { label: 'أسماء الطرق', enabled: allowHighway && !!els.toggleHighwayLabels.checked, visible: highwayLayer.labelsVisible, minScale: thresholds.highwayLabels, scale });
+    hiddenStatusCount += setLayerRowState('places', { label: is3D ? 'المدن الرئيسية فقط' : 'المدن والبلدات', enabled: allowPlaces, visible: showPlaces, minScale: thresholds.majorPlacesVisible, scale, modeLimited: is3D && allowPlaces });
+    hiddenStatusCount += setLayerRowState('place-labels', { label: 'أسماء المدن والبلدات', enabled: allowPlaces && !!els.togglePlaceLabels.checked, visible: placesLabelsVisible, minScale: thresholds.majorPlacesLabels, scale });
+    hiddenStatusCount += setLayerRowState('arch', { label: 'المواقع الأثرية', enabled: allowArch, visible: showArch, minScale: thresholds.archVisible, scale });
+    hiddenStatusCount += setLayerRowState('arch-labels', { label: 'أسماء المواقع الأثرية', enabled: allowArch && !!els.toggleArchLabels.checked, visible: archLayer.labelsVisible, minScale: thresholds.archLabels, scale });
+    hiddenStatusCount += setLayerRowState('hotels', { label: 'الفنادق ومنشآت الإيواء', enabled: allowHotels, visible: showHotels, minScale: thresholds.hotelsVisible, scale });
+    hiddenStatusCount += setLayerRowState('hotel-labels', { label: 'أسماء الفنادق', enabled: allowHotels && !!els.toggleHotelLabels.checked, visible: hotelsLayer.labelsVisible, minScale: thresholds.hotelsLabels, scale });
+    hiddenStatusCount += setLayerRowState('restaurants', { label: 'المطاعم وخدمات الطعام', enabled: allowRestaurants, visible: showRestaurants, minScale: thresholds.restaurantsVisible, scale });
+    hiddenStatusCount += setLayerRowState('restaurant-labels', { label: 'أسماء المطاعم', enabled: allowRestaurants && !!els.toggleRestaurantLabels.checked, visible: restaurantsLayer.labelsVisible, minScale: thresholds.restaurantsLabels, scale });
+    hiddenStatusCount += setLayerRowState('masar', { label: 'مسار درب الأردن', enabled: allowMasar, visible: showMasar, minScale: thresholds.masarVisible, scale });
+    hiddenStatusCount += setLayerRowState('masar-labels', { label: 'أسماء مراحل درب الأردن', enabled: allowMasar && !!els.toggleMasarLabels.checked, visible: masarLayer.labelsVisible, minScale: thresholds.masarLabels, scale });
+    hiddenStatusCount += setLayerRowState('fiber-edu', { label: 'مديريات التربية', enabled: allowFiberEdu, visible: showFiberEdu, minScale: thresholds.fiberEduVisible, scale, modeLimited: is3D && allowFiberEdu && !showFiberEdu });
+    hiddenStatusCount += setLayerRowState('fiber-gov', { label: 'الجهات الحكومية', enabled: allowFiberGov, visible: showFiberGov, minScale: thresholds.fiberGovVisible, scale, modeLimited: is3D && allowFiberGov && !showFiberGov });
+    hiddenStatusCount += setLayerRowState('fiber-health', { label: 'المؤسسات الصحية', enabled: allowFiberHealth, visible: showFiberHealth, minScale: thresholds.fiberHealthVisible, scale, modeLimited: is3D && allowFiberHealth && !showFiberHealth });
+    hiddenStatusCount += setLayerRowState('fiber-schools', { label: 'المدارس', enabled: allowFiberSchools, visible: showFiberSchools, minScale: thresholds.fiberSchoolsVisible, scale, modeLimited: is3D && allowFiberSchools && !showFiberSchools });
+    hiddenStatusCount += setLayerRowState('fiber-labels', { label: 'أسماء المواقع المؤسسية', enabled: fiberAllowedAny && !!els.toggleFiberLabels.checked, visible: fiberLabelsVisible, minScale: thresholds.fiberLabels, scale, modeLimited: is3D && fiberAllowedAny });
+    hiddenStatusCount += setLayerRowState('hillshade', { label: 'التضاريس Hillshade', enabled: !!els.toggleHillshade.checked, visible: !!hillshadeLayer?.visible, scale });
+    hiddenStatusCount += setLayerRowState('contours', { label: 'خطوط الكنتور', enabled: allowContours, visible: showContours, minScale: thresholds.contourVisible, scale });
+    updateLayerStatusSummary(hiddenStatusCount, scale);
 
     if (els.highwayZoomBadge) els.highwayZoomBadge.textContent = STAGE_LABELS[stage];
     if (!state.selectedGraphic && els.featureInfo) els.featureInfo.textContent = describeScaleStage(stage);
+    update3DDebugPanel();
   }
 
   function getWkid(spatialReference) {
@@ -4956,10 +5701,21 @@
   }
 
   async function enforceNationalViewLock() {
-    if (state.searchNavigationBusy || state.lockRecenterBusy || !state.nationalViewExtent || !view.extent) return;
+    if (state.searchNavigationBusy || state.lockRecenterBusy || isNavigationGuardSuspended() || !state.nationalViewExtent || !view.extent) return;
     const scale = Number(view.scale || 0);
     const nationalScale = Number(state.nationalScale || 0);
     if (!nationalScale || !scale) return;
+
+    // في SceneView لا نعتمد على extent.width/height أو offCenter لقفل المشهد.
+    // امتداد SceneView يتغيّر بقوة مع ميل الكاميرا والماوس، وقد يبدو أكبر من الأردن
+    // أثناء التكبير الطبيعي، وهذا كان يعيد المشهد إلى العرض الكامل بعد كل Wheel Zoom.
+    // لذلك في 3D لا نتدخل إلا عند التصغير خارج مقياس الأردن الكامل فعليًا.
+    if (isSceneView(view)) {
+      if (scale > nationalScale * 1.015) {
+        await fitJordanFullView(0);
+      }
+      return;
+    }
 
     const current = view.extent;
     const national = state.nationalViewExtent;
@@ -5023,7 +5779,15 @@
   }
 
   async function enforcePanWithinJordanExtent(duration = 0) {
-    if (state.searchNavigationBusy || state.lockRecenterBusy || state.panClampBusy || !state.panLimitExtent || !view.extent || !view.center) return;
+    if (state.searchNavigationBusy || state.lockRecenterBusy || state.panClampBusy || isNavigationGuardSuspended() || !state.panLimitExtent || !view.extent || !view.center) return;
+
+    // في 3D لا نستخدم clamp المركز بنفس طريقة 2D؛ لأن goTo({center, scale})
+    // قد يعيد تفسير الكاميرا ويُرجع المشهد إلى الأردن الكامل أثناء Zoom بالماوس.
+    // نكتفي بمنع التصغير خارج الأردن الكامل، ونترك التكبير/التحريك الطبيعي يعمل.
+    if (isSceneView(view)) {
+      await enforceNationalViewLock();
+      return;
+    }
 
     // عند مشهد الأردن الكامل لا نسمح بالتحريك أصلًا، ونستخدم قفل المشهد الوطني.
     if (isAtOrBeyondNationalView()) {
@@ -5098,7 +5862,7 @@
     const items = [];
     if (state.basemap === 'imagery') items.push('الصور الجوية');
     if (hillshadeLayer?.visible) items.push('التضاريس (Hillshade)');
-    if (govLayer?.visible) items.push('المحافظات');
+    if (govLayer?.visible || govBoundary3DLayer?.visible) items.push('المحافظات');
     if (liwaLayer?.visible) items.push('الألوية');
     if (railLayer?.visible) items.push('السكك الحديدية');
     if (highwayLayer?.visible) items.push('الطرق');
@@ -5610,7 +6374,7 @@
   }
 
   function getLayerByKey(key) {
-    if (key === 'gov') return govLayer;
+    if (key === 'gov') return state.viewMode === '3d' ? govBoundary3DLayer : govLayer;
     if (key === 'liwa') return liwaLayer;
     if (key === 'rail') return railLayer;
     if (key === 'highway') return highwayLayer;
@@ -5632,7 +6396,7 @@
     // تستخدم عند Identify بالنقر على الخريطة حتى يكون التحديد بنفس أسلوب البحث.
     // المقارنة بالـ object نفسه أدق من الاعتماد على title؛ ثم نستخدم العنوان كاحتياط.
     if (!layer) return null;
-    if (layer === govLayer) return 'gov';
+    if (layer === govLayer || layer === govBoundary3DLayer) return 'gov';
     if (layer === liwaLayer) return 'liwa';
     if (layer === railLayer) return 'rail';
     if (layer === highwayLayer) return 'highway';
@@ -5871,12 +6635,37 @@
   }
 
   function enforceOperationalLayerOrder() {
-    // ترتيب ثابت: الصور الجوية في الأسفل، ثم المباني، ثم الطبقات التشغيلية والتسميات.
+    // ترتيب كارتوغرافي ثابت: الخلفيات أسفل، ثم الحدود، ثم الكنتور/النقل، ثم النقاط، ثم نتائج المستخدم والذكاء الاصطناعي.
     try {
-      if (hasMapLayer(aerialImageryLayer)) map.reorder(aerialImageryLayer, 0);
-      if (hasMapLayer(buildings2dLayer)) map.reorder(buildings2dLayer, 1);
-      if (hasMapLayer(buildings3dLayer)) map.reorder(buildings3dLayer, 1);
-      if (hillshadeLayer && hasMapLayer(hillshadeLayer)) map.reorder(hillshadeLayer, 1);
+      const ordered = [
+        aerialImageryLayer,
+        hillshadeLayer,
+        buildings2dLayer,
+        buildings3dLayer,
+        govLayer,
+        govBoundary3DLayer,
+        liwaLayer,
+        contourLayer,
+        railLayer,
+        highwayLayer,
+        masarLayer,
+        majorPlacesLayer,
+        detailPlacesLayer,
+        archLayer,
+        hotelsLayer,
+        restaurantsLayer,
+        fiberEduLayer,
+        fiberGovLayer,
+        fiberHealthLayer,
+        fiberSchoolsLayer,
+        importedLayer,
+        editLayer,
+        aiResultsLayer
+      ].filter(Boolean);
+      let index = 0;
+      ordered.forEach((layer) => {
+        if (hasMapLayer(layer)) map.reorder(layer, index++);
+      });
     } catch (e) {
       console.warn('تعذر تثبيت ترتيب الطبقات فوق الصور الجوية.', e);
     }
@@ -5911,10 +6700,11 @@
   }
 
   function getBasemapId(mode, viewMode = state.viewMode) {
-    // صور جوية خام بدون أسماء أو تسميات من خريطة الأساس.
-    // عند ON نستخدم satellite وليس hybrid، حتى تظهر فقط أسماء الطبقات التي يفعلها المستخدم من لوحة الطبقات.
+    // في 3D لا نستخدم أي Basemap جاهزة حتى لا تظهر أسماء إنجليزية.
+    // الصور الجوية في 3D تُعرض كطبقة TileLayer مستقلة أسفل الطبقات العربية.
+    if (viewMode === '3d') return null;
     if (mode === 'imagery') return 'satellite';
-    return viewMode === '3d' ? 'topo-3d' : null;
+    return null;
   }
 
   function updateBasemapButtons() {
@@ -5925,9 +6715,11 @@
     els.aerial3dBtn?.classList.toggle('active', isImagery);
 
     if (els.aerial3dBtn) {
-      const title = isImagery
-        ? `إيقاف الصور الجوية في وضع ${modeText}`
-        : `تشغيل الصور الجوية في وضع ${modeText}`;
+      const title = state.viewMode === '3d'
+        ? 'الصور الجوية ثابتة في 3D لضمان ظهور التضاريس بوضوح وبدون أسماء إنجليزية'
+        : (isImagery
+          ? `إيقاف الصور الجوية في وضع ${modeText}`
+          : `تشغيل الصور الجوية في وضع ${modeText}`);
       els.aerial3dBtn.title = title;
       els.aerial3dBtn.setAttribute('aria-label', title);
       els.aerial3dBtn.setAttribute('aria-pressed', isImagery ? 'true' : 'false');
@@ -5935,21 +6727,57 @@
     }
   }
 
+  function ensure3DDebugPanel() {
+    if (!els.mapWrap) return null;
+    let panel = document.getElementById('scene3dDebugPanel');
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'scene3dDebugPanel';
+      panel.className = 'scene-3d-debug-panel';
+      panel.setAttribute('dir', 'rtl');
+      panel.style.cssText = 'position:absolute;left:14px;top:14px;z-index:40;background:rgba(15,23,42,.78);color:#fff;border:1px solid rgba(255,255,255,.25);border-radius:12px;padding:8px 10px;font:11px/1.55 var(--app-font, Arial);box-shadow:0 10px 24px rgba(15,23,42,.22);max-width:245px;display:none;pointer-events:none;white-space:pre-line;';
+      els.mapWrap.appendChild(panel);
+    }
+    return panel;
+  }
+
+  function update3DDebugPanel() {
+    const panel = ensure3DDebugPanel();
+    if (!panel) return;
+    const enabled = state.viewMode === '3d' && (new URLSearchParams(location.search).get('debug3d') === '1' || localStorage.getItem('gis3dDebug') === '1');
+    panel.style.display = enabled ? 'block' : 'none';
+    if (!enabled) return;
+    panel.textContent = [
+      '3D Debug',
+      `Scale: ${compactScale(Number(view?.scale || 0))}`,
+      `Basemap: ${map.basemap ? 'basemap' : 'none'} / imagery layer: ${aerialImageryLayer?.visible ? 'on' : 'off'}`,
+      `Ground: ${String(map.ground || 'none')}`,
+      `Gov: ${govBoundary3DLayer?.visible ? '3D boundaries' : (govLayer?.visible ? '2D colored' : 'off')}`,
+      `Road filter: ${highwayLayer?.definitionExpression ? 'main only' : 'all'}`,
+      `Places filter: ${majorPlacesLayer?.definitionExpression ? 'cities only' : 'all'}`,
+      `Hillshade: ${hillshadeLayer?.visible ? 'on' : 'off'}`,
+      `Navigation lock: ${isNavigationGuardSuspended() ? 'suspended' : 'active'}`
+    ].join('\n');
+  }
+
   function setBasemapMode(mode) {
-    state.basemap = mode === 'imagery' ? 'imagery' : 'none';
+    // في 3D النهائي نستخدم World Imagery دائمًا كخلفية مرئية فوق world-elevation.
+    // إطفاء الصور الجوية في 3D يعيد مشكلة الأرض البيضاء/الشبكية، لذلك يتم تثبيتها في هذا الوضع.
+    state.basemap = state.viewMode === '3d' ? 'imagery' : (mode === 'imagery' ? 'imagery' : 'none');
 
     // يوجد الآن زران فقط للتحكم بالعرض:
     // 1) صور جوية ON/OFF: يفعّل الصور الجوية والمباني حسب الوضع الحالي.
     // 2) 2D/3D: يبدّل بين الخريطة الثنائية والمشهد الثلاثي الأبعاد.
-    const targetBasemap = getBasemapId(state.basemap);
+    const targetBasemap = getBasemapId(state.basemap, state.viewMode);
     map.basemap = targetBasemap;
-    try { if (mapElement) mapElement.basemap = targetBasemap || undefined; } catch (e) {}
-    try { if (sceneElement) sceneElement.basemap = targetBasemap || undefined; } catch (e) {}
+    try { if (mapElement) mapElement.basemap = targetBasemap || null; } catch (e) {}
+    try { if (sceneElement) sceneElement.basemap = targetBasemap || null; } catch (e) {}
 
     // هذه هي طبقة الصور الجوية الفعلية عند ON.
     // هي أول طبقة في الخريطة: تظهر أسفل المحافظات والطرق والرموز.
     aerialImageryLayer.visible = state.basemap === 'imagery';
     enforceOperationalLayerOrder();
+    if (state.viewMode === '3d') activateSceneTerrainOverlay({ autoCheck: false, message: false });
 
     // اجعل ألوان المحافظات شفافة فوق الصور الجوية بدل أن تغطيها بالكامل.
     state.currentGovRendererKey = null;
@@ -5958,21 +6786,19 @@
     syncBuildingsForCurrentView();
     enforceOperationalLayerOrder();
     updateBasemapButtons();
+    update3DDebugPanel();
 
     if (state.viewMode === '3d') {
-      try {
-        map.ground = 'world-elevation';
-        applySceneVisualQuality(view);
-      } catch (e) {}
+      activateSceneTerrainOverlay({ autoCheck: false, message: false });
     }
 
     if (!state.selectedGraphic) {
       if (state.viewMode === '3d' && state.basemap === 'imagery') {
-        if (els.featureInfo) els.featureInfo.textContent = 'الصور الجوية مفعّلة في وضع 3D بدون أسماء من خريطة الأساس. تظهر فقط تسميات الطبقات التي تم تفعيلها، مع مباني OSM ثلاثية الأبعاد عند التكبير المناسب.';
+        if (els.featureInfo) els.featureInfo.textContent = '3D النهائي: صور جوية + world-elevation بدون أسماء إنجليزية. Hillshade اختياري فقط، والطبقات الكثيفة مخفية حسب Profile 3D.';
         if (els.modeBadge) els.modeBadge.textContent = 'ArcGIS — صور جوية + مباني 3D';
       } else if (state.viewMode === '3d') {
-        if (els.featureInfo) els.featureInfo.textContent = 'العرض ثلاثي الأبعاد مفعّل. زر الصور الجوية مستقل ويمكن تشغيله أو إيقافه دون تغيير وضع 2D/3D.';
-        if (els.modeBadge) els.modeBadge.textContent = 'ArcGIS — 3D Scene';
+        if (els.featureInfo) els.featureInfo.textContent = '3D النهائي يعمل بصور جوية وworld-elevation بدون topo-3d أو أسماء إنجليزية. المدن الرئيسية والطرق الرئيسية والمعالم السياحية تظهر تدريجيًا فقط.';
+        if (els.modeBadge) els.modeBadge.textContent = 'ArcGIS — 3D عربي مبسط';
       } else if (state.basemap === 'imagery') {
         if (els.featureInfo) els.featureInfo.textContent = 'الصور الجوية مفعّلة بدون أسماء من خريطة الأساس. تظهر فقط تسميات الطبقات المفعّلة من اللوحة، وتظهر المباني حسب وضع 2D/3D عند التكبير المناسب.';
         if (els.modeBadge) els.modeBadge.textContent = 'ArcGIS — صور جوية';
@@ -5983,6 +6809,14 @@
   }
 
   async function toggleAerialImageryBuildings() {
+    if (state.viewMode === '3d' && state.basemap === 'imagery') {
+      // في 3D لا نطفئ الصور الجوية لأنها الخلفية المرئية التي تُظهر world-elevation بوضوح.
+      if (els.featureInfo && !state.selectedGraphic) {
+        els.featureInfo.textContent = 'في 3D تم تثبيت الصور الجوية حتى تظهر التضاريس بوضوح. استخدم خيار Hillshade فقط لإبراز/تخفيف التضاريس.';
+      }
+      updateBasemapButtons();
+      return;
+    }
     const activating = state.basemap !== 'imagery';
     setBasemapMode(activating ? 'imagery' : 'none');
 
@@ -5992,7 +6826,7 @@
           const sv = await ensureSceneView();
           if (sv && view.camera?.clone) {
             const camera = view.camera.clone();
-            camera.tilt = Math.max(camera.tilt || 0, 45);
+            camera.tilt = Math.max(camera.tilt || 0, 42);
             camera.heading = camera.heading || 0;
             await view.goTo(camera, { duration: 260 });
           }
@@ -6020,6 +6854,7 @@
       await sceneElement.viewOnReady();
       sceneView = sceneElement.view;
       applyBaseViewSettings(sceneView);
+      bindCoordinateWidget(sceneView);
       bindViewInteractions(sceneView);
       bindPopupWatcher(sceneView);
       sceneElement.style.visibility = '';
@@ -6049,20 +6884,24 @@
         els.view3dBtn.title = 'العودة إلى العرض ثنائي الأبعاد';
         els.view3dBtn.setAttribute('aria-label', 'العودة إلى العرض ثنائي الأبعاد');
       }
-      if (els.modeBadge) els.modeBadge.textContent = state.basemap === 'imagery' ? 'ArcGIS — صور جوية + مباني 3D' : 'ArcGIS — 3D Scene';
-      setBasemapMode(state.basemap);
+      if (els.modeBadge) els.modeBadge.textContent = 'ArcGIS — 3D صور جوية + تضاريس';
+      if (els.toggleHillshade) els.toggleHillshade.checked = false;
+      setBasemapMode('imagery');
+      activateSceneTerrainOverlay({ autoCheck: false, message: true });
       applyNationalZoomConstraints(view);
       await goHome(450);
       try {
         if (view.camera?.clone) {
           const camera = view.camera.clone();
-          camera.tilt = 38;
+          camera.tilt = 42;
           camera.heading = 0;
           await view.goTo(camera, { duration: 220 });
         }
       } catch (e) {}
       updateScaleBadge();
+      state.currentGovRendererKey = null;
       updateScaleDrivenHierarchy();
+      scheduleScaleDrivenHierarchyUpdate();
       return;
     }
 
@@ -6098,7 +6937,7 @@
 
     popupWatcher.watch('selectedFeature', async (graphic) => {
       if (targetView !== view || !graphic) return;
-      const layerKey = graphic.layer === govLayer ? 'gov'
+      const layerKey = (graphic.layer === govLayer || graphic.layer === govBoundary3DLayer) ? 'gov'
         : graphic.layer === liwaLayer ? 'liwa'
         : graphic.layer === railLayer ? 'rail'
         : graphic.layer === highwayLayer ? 'highway'
@@ -6135,6 +6974,18 @@
     targetView.on('mouse-wheel', (event) => {
       if (targetView !== view) return;
       const deltaY = Number(event.deltaY ?? event.native?.deltaY ?? 0);
+
+      if (isSceneView(targetView)) {
+        // Wheel Zoom في 3D يجب أن يغيّر الكاميرا بحرية. نعلّق حراس الرجوع
+        // مؤقتًا حتى لا تلتقط watchers لحظة انتقالية وتعيد المشهد للعرض الكامل.
+        suspendNavigationGuards(900);
+        if (deltaY > 0 && isAtOrBeyondNationalView()) {
+          event.stopPropagation();
+          fitJordanFullView(0);
+        }
+        return;
+      }
+
       if (deltaY > 0 && isAtOrBeyondNationalView()) {
         event.stopPropagation();
         fitJordanFullView(0);
@@ -6150,25 +7001,55 @@
 
     targetView.watch('scale', () => {
       if (targetView !== view) return;
-      updateScaleBadge();
-      enforceNationalViewLock();
-      enforcePanWithinJordanExtent(0);
+      scheduleScaleDrivenHierarchyUpdate();
+
+      if (isSceneView(targetView)) {
+        if (!isNavigationGuardSuspended()) enforceNationalViewLock();
+        return;
+      }
+
+      if (!isNavigationGuardSuspended()) {
+        enforceNationalViewLock();
+        enforcePanWithinJordanExtent(0);
+      }
     });
+    if (isSceneView(targetView)) {
+      targetView.watch('camera', () => {
+        if (targetView !== view) return;
+        scheduleScaleDrivenHierarchyUpdate();
+      });
+    }
     targetView.watch('extent', () => {
       if (targetView !== view) return;
-      if (!targetView.interacting && !targetView.animation) enforcePanWithinJordanExtent(0);
+      scheduleScaleDrivenHierarchyUpdate();
+
+      if (isSceneView(targetView)) {
+        // لا نطبّق pan clamp على extent في 3D؛ فهو سبب الرجوع للعرض الكامل أثناء الزوم.
+        return;
+      }
+
+      if (!isNavigationGuardSuspended() && !targetView.interacting && !targetView.animation) enforcePanWithinJordanExtent(0);
     });
     targetView.watch('stationary', (stationary) => {
       if (targetView !== view) return;
       if (stationary) {
-        enforceNationalViewLock();
-        enforcePanWithinJordanExtent(0);
+        if (isSceneView(targetView)) {
+          if (!isNavigationGuardSuspended()) enforceNationalViewLock();
+          scheduleScaleDrivenHierarchyUpdate();
+          return;
+        }
+
+        if (!isNavigationGuardSuspended()) {
+          enforceNationalViewLock();
+          enforcePanWithinJordanExtent(0);
+        }
+        scheduleScaleDrivenHierarchyUpdate();
       }
     });
 
     targetView.on('click', async (event) => {
       if (targetView !== view) return;
-      const hit = await targetView.hitTest(event, { include: [govLayer, liwaLayer, railLayer, highwayLayer, majorPlacesLayer, detailPlacesLayer, fiberEduLayer, fiberGovLayer, fiberHealthLayer, fiberSchoolsLayer, hotelsLayer, restaurantsLayer, masarLayer, contourLayer, archLayer, importedLayer, editLayer] });
+      const hit = await targetView.hitTest(event, { include: [govLayer, govBoundary3DLayer, liwaLayer, railLayer, highwayLayer, majorPlacesLayer, detailPlacesLayer, fiberEduLayer, fiberGovLayer, fiberHealthLayer, fiberSchoolsLayer, hotelsLayer, restaurantsLayer, masarLayer, contourLayer, archLayer, importedLayer, editLayer] });
       const graphic = hit.results?.find((result) => result?.graphic?.layer)?.graphic || hit.results?.[0]?.graphic;
       if (graphic) {
         const layerKey = getLayerKeyFromLayer(graphic.layer);
@@ -6219,7 +7100,7 @@
   els.toggleMasar?.addEventListener('change', updateScaleDrivenHierarchy);
   els.toggleMasarLabels?.addEventListener('change', () => { state.labelPrefs.masar = els.toggleMasarLabels.checked; updateScaleDrivenHierarchy(); });
   els.toggleContours?.addEventListener('change', updateScaleDrivenHierarchy);
-  els.toggleHillshade?.addEventListener('change', updateScaleDrivenHierarchy);
+  els.toggleHillshade?.addEventListener('change', () => { if (state.viewMode === '3d') activateSceneTerrainOverlay({ autoCheck: false, message: true }); updateScaleDrivenHierarchy(); });
   els.toggleArchSites?.addEventListener('change', updateScaleDrivenHierarchy);
   els.toggleArchLabels?.addEventListener('change', () => { state.labelPrefs.arch = els.toggleArchLabels.checked; updateScaleDrivenHierarchy(); });
   els.toggleHotels?.addEventListener('change', updateScaleDrivenHierarchy);
@@ -6231,30 +7112,42 @@
     const nationalScale = Number(state.nationalScale || NATIONAL_HOME_SCALE_FALLBACK);
     const currentScale = Number(view.scale || nationalScale);
 
+    // direction < 0 = تكبير، direction > 0 = تصغير.
+    // في السابق كان الضغط على + يستدعي حارس حدود الأردن أثناء حركة الكاميرا،
+    // فيعيد المشهد إلى الأردن الكامل. الآن نعلّق الحارس أثناء الزوم المبرمج.
     if (direction > 0 && currentScale >= nationalScale * 0.995) {
       await fitJordanFullView(0);
       updateScaleBadge();
+      scheduleScaleDrivenHierarchyUpdate();
       return;
     }
 
-    if (isSceneView(view) && view.camera?.clone) {
-      const camera = view.camera.clone();
-      const factor = direction < 0 ? 1 / 1.45 : 1.45;
-      if (camera.position) camera.position.z = Math.max(150, Number(camera.position.z || 10000) * factor);
-      await view.goTo(camera, { duration: 220 });
-      if (direction > 0 && Number(view.scale || 0) >= nationalScale) await fitJordanFullView(0);
-      updateScaleBadge();
-      return;
-    }
-
+    const factor = isSceneView(view) ? 1.45 : 1.45;
     const nextScale = direction < 0
-      ? Math.max(5000, currentScale / 1.45)
-      : Math.min(nationalScale, currentScale * 1.45);
-    await view.goTo({ center: view.center, scale: nextScale }, { duration: 220 });
-    if (direction > 0) await enforceNationalViewLock();
-    await enforcePanWithinJordanExtent(0);
+      ? Math.max(3500, currentScale / factor)
+      : Math.min(nationalScale, currentScale * factor);
+
+    state.controlledZoomBusy = true;
+    suspendNavigationGuards(1300);
+    try {
+      await goToScaleKeepingContext(nextScale, 300);
+    } finally {
+      state.controlledZoomBusy = false;
+      suspendNavigationGuards(450);
+    }
+
+    // لا نستدعي enforcePanWithinJordanExtent بعد التكبير في 3D؛ لأنه كان سبب الرجوع للخريطة الكاملة.
+    if (direction > 0) {
+      await enforceNationalViewLock();
+      await enforcePanWithinJordanExtent(0);
+    } else if (!isSceneView(view)) {
+      await enforcePanWithinJordanExtent(0);
+    }
+
     updateScaleBadge();
+    scheduleScaleDrivenHierarchyUpdate();
   }
+
 
   els.zoomInBtn?.addEventListener('click', async (event) => {
     event.preventDefault();
@@ -6394,7 +7287,7 @@
   updateSidebarToggleButton();
   requestAnimationFrame(updateScaleBadge);
 
-  // إعادة رسم تسميات الخريطة بعد تحميل الخط المحلي، حتى تستخدم أسماء الطبقات خط Tajawal عند توفره.
+  // إعادة رسم تسميات الخريطة بعد تحميل الخط المحلي، مع الإبقاء على خط Tajawal المحلي لواجهة التطبيق، واستخدام خط ArcGIS آمن لتسميات الخريطة.
   if (document.fonts?.ready) {
     document.fonts.ready.then(() => {
       try {
